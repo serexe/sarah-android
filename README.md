@@ -5,6 +5,33 @@ This is the **pre-wake, foreground tap-to-talk** source: application ID
 `com.serexe.sarah`, versionCode `3`, versionName `0.1.2-review`.
 It is not the current development tree and is not a wakeword/always-listening assistant.
 
+## Current approved icon
+
+<p><img src="app/src/main/res/mipmap-xxxhdpi/ic_launcher.png" alt="SARAH launcher icon: luminous cyan and violet house surrounding an S-shaped orb" width="160"></p>
+
+The actual launcher resource above uses the [owner-approved original artwork](artwork/launcher-artwork-original.png)
+already preserved in this historical code3 source. A read-only comparison with the current development tree found the
+original artwork and all 18 launcher resource files **byte-identical**. No launcher
+files were replaced, and no APK was rebuilt for this documentation update.
+
+## Screenshots — historical code3, pre-wake
+
+These are **two authentic emulator captures of `0.1.2-review` (code3)**, not
+mockups or current-development screenshots. The visible transcript and reply were
+seeded synthetic fixtures, not personal conversations or evidence of a live voice
+exchange. No wakeword/always-listening UI is shown.
+
+| Foreground tap-to-talk | Local pairing confirmation |
+| --- | --- |
+| [![Code3 foreground tap-to-talk with synthetic transcript and reply](docs/screenshots/code3-tap-to-talk.png)](docs/screenshots/code3-tap-to-talk.png) | [![Code3 Clear local pairing confirmation](docs/screenshots/code3-clear-pairing.png)](docs/screenshots/code3-clear-pairing.png) |
+
+The second capture shows the confirmation opened by **Connection settings**;
+it is not an editable connection form. The historical capture did not clear pairing.
+Both images were visually reviewed for private endpoints, tokens, account IDs and
+personal conversation; none were visible, so no redaction was needed.
+See [screenshot provenance](docs/screenshots/PROVENANCE.md) for exact hashes and
+limits. These old captures are not new runtime, phone or build verification.
+
 ## Historical artifact identity — not a reproducibility claim
 
 The original delivered code3 APK was version `0.1.2-review`, with SHA-256:
