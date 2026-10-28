@@ -65,11 +65,13 @@ internal class OffscreenCommand(
   val job=scope.async(Dispatchers.IO,start=CoroutineStart.LAZY) {c.record()}
   recording=job;job.start()
   // Capture remains bounded even if Activity vanishes or screen turns off.
-  delay(minOf(8000L,(deadline-SystemClock.elapsedRealtime()).coerceAtLeast(0)))
+  // Natural endpoint is four seconds after last speech, not a fixed eight-second window.
+  // Capture's independent 30-second PCM/clock cap discards an unended command.
+  try {withTimeout(31_000L) {job.await()}}
+  catch (_:Exception) {c.discard();job.cancel();throw CancellationException("capture endpoint failed")}
   c.stop()
-  try {withTimeout(2500L) {job.await()}} catch (_:Exception) {c.discard();job.cancel();throw CancellationException("capture release failed")}
   check(c.releaseComplete) {"capture release failed"}
-  if(!eligible() || c.capped || !c.speechDetected) {stage("discarded");return}
+  if(!eligible() || c.capped || !c.endpointReached || !c.speechDetected) {stage("discarded");return}
   val wav=try {c.finish()} catch (_:Exception) {stage("discarded");return}
   c.discard();capture=null
   if(!eligible()) return

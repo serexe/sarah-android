@@ -36,7 +36,7 @@ class SarahViewModelTest {
  }
  private class Mic:AudioCapture {
   val end=CompletableDeferred<Unit>();var stopped=false;var joined=false;var discarded=false;var finished=0;var permissionRevoked=false
-  var stopCompletes=false;override var speechDetected=true
+  var stopCompletes=false;override var speechDetected=true;override var endpointReached=false
   override val capped=false
   override suspend fun record() {end.await();joined=true}
   override fun stop() {stopped=true;if(stopCompletes) end.complete(Unit)}
@@ -46,10 +46,10 @@ class SarahViewModelTest {
  private class Sound(private val done:(Boolean)->Unit):AudioPlayback {var played=0;override fun play(bytes:ByteArray) {played++};override fun stop() {};fun finish(clean:Boolean=true)=done(clean)}
  private fun persisted(phase:String="ready")=JSONObject().put("origin","https://fixture.invalid").put("token","x".repeat(48)).put("conversation","c1").put("phase",phase)
  private data class Fixture(val vm:SarahViewModel,val memory:Memory,val wire:Wire,val mic:Mic,val sound:Sound,val captureStarts:()->Int,val rearms:()->Int)
- private fun fixture(initial:JSONObject=persisted(),eligible:(Boolean)->Boolean={true},beforePlayback:suspend ()->Unit={},autoTimeoutMs:Long=8000,
+ private fun fixture(initial:JSONObject=persisted(),eligible:(Boolean)->Boolean={true},beforePlayback:suspend ()->Unit={},
   guardedStore:Boolean=false,loadFailure:Exception?=null):Fixture {
   val memory=Memory(initial,guardedStore,loadFailure);val wire=Wire();val mic=Mic();lateinit var sound:Sound;var starts=0;var rearms=0
-  val vm=SarahViewModel(Application(),memory,{_,_,_->wire},{_->starts++;mic},{done->Sound(done).also {sound=it}},CoroutineScope(SupervisorJob()+Dispatchers.Unconfined),Dispatchers.Unconfined,eligible,beforePlayback,{rearms++},autoTimeoutMs)
+  val vm=SarahViewModel(Application(),memory,{_,_,_->wire},{_->starts++;mic},{done->Sound(done).also {sound=it}},CoroutineScope(SupervisorJob()+Dispatchers.Unconfined),Dispatchers.Unconfined,eligible,beforePlayback,{rearms++})
   return Fixture(vm,memory,wire,mic,sound,{starts},{rearms})
  }
  @Test fun localSnapshotUsesRealLeaseReleaseAndHealthStateWithoutSensitiveFields() {
@@ -220,40 +220,49 @@ class SarahViewModelTest {
   assertEquals(0,f.memory.writes)
   assertEquals(0,f.wire.posts)
  }
- @Test fun wakeAutoTimeoutSubmitsOnceAndRearmsOnlyAfterTextReply()=runBlocking {
-  val f=fixture(autoTimeoutMs=40);f.mic.stopCompletes=true;f.vm.onForeground()
+ @Test fun wakeEndpointSubmitsOnceAndRearmsOnlyAfterTextReply()=runBlocking {
+  val f=fixture();f.mic.endpointReached=true;f.vm.onForeground()
   assertTrue(f.vm.acceptWake());assertFalse(f.vm.acceptWake());assertEquals("recording",f.vm.ui.value.phase)
+  f.mic.end.complete(Unit)
   delay(150)
   assertEquals(1,f.captureStarts());assertEquals(1,f.wire.posts);assertEquals(1,f.mic.finished)
   assertEquals("done",f.vm.ui.value.phase);assertEquals(1,f.rearms())
  }
- @Test fun silenceAndBackgroundBeforeTimeoutNeverSubmitOrRearm()=runBlocking {
-  val silent=fixture(autoTimeoutMs=40);silent.mic.speechDetected=false;silent.vm.onForeground();assertTrue(silent.vm.acceptWake());delay(100)
+ @Test fun foregroundTapUsesSameEndpointAndNoSpeechNeverSends()=runBlocking {
+  val spoken=fixture();spoken.mic.endpointReached=true;spoken.vm.onForeground();spoken.vm.startCapture()
+  spoken.mic.end.complete(Unit);delay(50)
+  assertEquals(1,spoken.wire.posts);assertEquals("done",spoken.vm.ui.value.phase)
+  val silent=fixture();silent.mic.endpointReached=true;silent.mic.speechDetected=false
+  silent.vm.onForeground();silent.vm.startCapture();silent.mic.end.complete(Unit);delay(50)
+  assertEquals(0,silent.wire.posts);assertTrue(silent.mic.discarded)
+ }
+ @Test fun silenceAndBackgroundBeforeEndpointNeverSubmitOrRearm()=runBlocking {
+  val silent=fixture();silent.mic.speechDetected=false;silent.vm.onForeground();assertTrue(silent.vm.acceptWake());silent.mic.end.complete(Unit);delay(100)
   assertTrue(silent.mic.discarded);assertEquals(0,silent.wire.posts);assertEquals(0,silent.rearms())
-  val background=fixture(autoTimeoutMs=40);background.vm.onForeground();assertTrue(background.vm.acceptWake());background.vm.onBackground();delay(100)
+  val background=fixture();background.vm.onForeground();assertTrue(background.vm.acceptWake());background.vm.onBackground();delay(100)
   assertEquals(0,background.wire.posts);assertEquals(0,background.rearms())
  }
  @Test fun noTtsSelfWakeAndStopAudioPreventsRearm()=runBlocking {
-  val f=fixture(autoTimeoutMs=40);f.mic.stopCompletes=true;f.wire.row.put("audio",true);f.vm.onForeground();assertTrue(f.vm.acceptWake());delay(150)
+  val f=fixture();f.mic.endpointReached=true;f.wire.row.put("audio",true);f.vm.onForeground();assertTrue(f.vm.acceptWake());f.mic.end.complete(Unit);delay(150)
   assertEquals("playing",f.vm.ui.value.phase);assertEquals(1,f.sound.played);assertEquals(0,f.rearms());assertFalse(f.vm.acceptWake())
   f.vm.stopAudio();f.sound.finish();assertEquals(0,f.rearms());assertEquals(1,f.wire.posts)
  }
  @Test fun successfulSpokenReplyRearmsOnlyAfterPlaybackRelease()=runBlocking {
-  val f=fixture(autoTimeoutMs=40);f.mic.stopCompletes=true;f.wire.row.put("audio",true)
-  f.vm.onForeground();assertTrue(f.vm.acceptWake());delay(150)
+  val f=fixture();f.mic.endpointReached=true;f.wire.row.put("audio",true)
+  f.vm.onForeground();assertTrue(f.vm.acceptWake());f.mic.end.complete(Unit);delay(150)
   assertEquals("playing",f.vm.ui.value.phase);assertEquals(0,f.rearms())
   f.sound.finish();assertEquals("done",f.vm.ui.value.phase);assertEquals(1,f.rearms())
   f.sound.finish();assertEquals(1,f.rearms());assertEquals(1,f.wire.posts)
  }
  @Test fun interruptedTtsNeverRearms()=runBlocking {
-  val f=fixture(autoTimeoutMs=40);f.mic.stopCompletes=true;f.wire.row.put("audio",true)
-  f.vm.onForeground();assertTrue(f.vm.acceptWake());delay(150)
+  val f=fixture();f.mic.endpointReached=true;f.wire.row.put("audio",true)
+  f.vm.onForeground();assertTrue(f.vm.acceptWake());f.mic.end.complete(Unit);delay(150)
   assertEquals("playing",f.vm.ui.value.phase)
   f.sound.finish(false);assertEquals("done",f.vm.ui.value.phase);assertEquals(0,f.rearms())
  }
  @Test fun ambiguousWakePostMustNotRearmAfterReadOnlyLookup()=runBlocking {
-  val f=fixture(autoTimeoutMs=40);f.mic.stopCompletes=true;f.wire.onSubmit={throw IOException("response lost")}
-  f.vm.onForeground();assertTrue(f.vm.acceptWake());delay(150)
+  val f=fixture();f.mic.endpointReached=true;f.wire.onSubmit={throw IOException("response lost")}
+  f.vm.onForeground();assertTrue(f.vm.acceptWake());f.mic.end.complete(Unit);delay(150)
   assertEquals("uncertain",f.vm.ui.value.phase);assertEquals(0,f.rearms());assertEquals(1,f.wire.posts)
   f.vm.checkExisting();assertEquals(1,f.wire.lookups);assertEquals(0,f.rearms());assertEquals(1,f.wire.posts)
  }

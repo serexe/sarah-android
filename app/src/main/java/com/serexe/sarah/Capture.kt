@@ -12,6 +12,7 @@ import android.media.AudioFocusRequest
 import android.media.AudioAttributes
 import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
+import android.media.ToneGenerator
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -30,8 +31,9 @@ class Capture(private val context:Context,private val onInterrupted:()->Unit = {
  @Volatile internal var releaseComplete=true;private set
  private val buffer=ByteArrayOutputStream()
  @Volatile override var capped=false;private set
- @Volatile private var voicedChunks=0
- override val speechDetected:Boolean get()=voicedChunks>=5
+ private var endpoint=CommandEndpoint(SystemClock::elapsedRealtimeNanos)
+ override val speechDetected:Boolean get()=endpoint.speechDetected
+ @Volatile override var endpointReached=false;private set
  @Volatile private var stopping=false
  private val nativeStart=NativeStartOwnership()
  @Volatile private var interrupted=false
@@ -67,7 +69,7 @@ class Capture(private val context:Context,private val onInterrupted:()->Unit = {
     check(it.state==AudioRecord.STATE_INITIALIZED) {it.release();"16 kHz PCM input unavailable"}
    }
   } catch(e:Exception) { /* No release ACK if construction/release failed. */ throw e}
-  recorder=r;buffer.reset();capped=false;voicedChunks=0
+  recorder=r;buffer.reset();capped=false;endpointReached=false;endpoint=CommandEndpoint(SystemClock::elapsedRealtimeNanos)
   try {
    if(stopping) return@withContext
    val request=AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_EXCLUSIVE)
@@ -81,21 +83,35 @@ class Capture(private val context:Context,private val onInterrupted:()->Unit = {
     r.startRecording()
     if(commandLimit) {
      limit=CommandCaptureLimit(SystemClock.elapsedRealtimeNanos(),SystemClock::elapsedRealtimeNanos)
-     watchdog?.schedule({stop()},8,TimeUnit.SECONDS)
+     watchdog?.schedule({capped=true;stop()},30,TimeUnit.SECONDS)
     }
    })
    val chunk=ByteArray(2048)
-   while (coroutineContext.isActive && !capped && !stopping && limit?.expired!=true) {
+   // The mic is already recording. ToneGenerator needs no second AudioArbiter owner
+   // or audio-focus request. Drain mic PCM through the short tone and acoustic tail.
+   val tone=ToneGenerator(AudioManager.STREAM_NOTIFICATION,70)
+   try {
+    check(MicReadyCueGate.play(r.recordingState==AudioRecord.RECORDSTATE_RECORDING,
+     {tone.startTone(ToneGenerator.TONE_PROP_BEEP,120)}) {
+      val until=SystemClock.elapsedRealtime()+350L
+      while(SystemClock.elapsedRealtime()<until && !stopping && coroutineContext.isActive) {
+       if(!eligible()) {interrupt();break}
+       val count=r.read(chunk,0,chunk.size,AudioRecord.READ_NON_BLOCKING)
+       if(count<0 && !stopping) throw IllegalStateException("Microphone interrupted")
+       if(count==0) kotlinx.coroutines.delay(10)
+      }
+     }) {"Microphone readiness cue unavailable"}
+   } finally {tone.stopTone();tone.release()}
+   while (coroutineContext.isActive && !capped && !stopping) {
+    if(limit?.expired==true) {capped=true;break}
+    if(commandLimit && endpoint.reached) {endpointReached=true;break}
     if(!eligible()) {interrupt();break}
     val n=r.read(chunk,0,chunk.size,AudioRecord.READ_NON_BLOCKING)
     if(!eligible()) {interrupt();break}
     if(n==0) kotlinx.coroutines.delay(20)
     if (n<0 && !stopping) throw IllegalStateException("Microphone interrupted")
     if (n>0 && !stopping && limit?.expired!=true) synchronized(buffer) {
-     // Silence veto only; never treated as keyword detection or transcription.
-     var energy=0L;var samples=0;var i=0
-     while(i+1<n) {val v=((chunk[i].toInt() and 255) or (chunk[i+1].toInt() shl 8)).toShort().toInt();energy+=kotlin.math.abs(v);samples++;i+=2}
-     if(samples>0 && energy/samples>600) voicedChunks++
+     endpoint.accept(chunk,n)
      val left=Wav.MAX_SAMPLES*2-buffer.size()
      val permitted=limit?.bytesAllowed(buffer.size(),n) ?: minOf(n,left)
      buffer.write(chunk,0,minOf(permitted,left));if (buffer.size()>=Wav.MAX_SAMPLES*2) capped=true
@@ -120,7 +136,7 @@ class Capture(private val context:Context,private val onInterrupted:()->Unit = {
  // READ_NON_BLOCKING loop owns native stop/release on IO; callers only invalidate.
  override fun stop() { nativeStart.cancel {stopping=true} }
  override fun finish():ByteArray=synchronized(buffer) {
-  check(!interrupted && eligible() && (!commandLimit || buffer.size()<=Wav.RATE*8*2)) {"Microphone interrupted or command over limit"}
+  check(!interrupted && eligible() && !capped && buffer.size()<=Wav.MAX_SAMPLES*2) {"Microphone interrupted or command over limit"}
   val bytes=buffer.toByteArray();buffer.reset();Wav.encode(bytes)
  }
  override fun discard() { stop();synchronized(buffer) { buffer.reset() } }

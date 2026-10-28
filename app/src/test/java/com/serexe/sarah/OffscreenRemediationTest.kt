@@ -57,11 +57,35 @@ class OffscreenRemediationTest {
   var now=1_000_000_000L
   val limit=CommandCaptureLimit(now,{now})
   assertEquals(2048,limit.bytesAllowed(0,2048))
-  assertEquals(2,limit.bytesAllowed(Wav.RATE*8*2-2,2048))
-  now+=8_000_000_000L
+  assertEquals(2,limit.bytesAllowed(Wav.MAX_SAMPLES*2-2,2048))
+  now+=30_000_000_000L
   assertTrue(limit.expired)
   assertEquals(0,limit.bytesAllowed(0,2048))
-  assertEquals(0,limit.bytesAllowed(Wav.RATE*8*2,2048))
+  assertEquals(0,limit.bytesAllowed(Wav.MAX_SAMPLES*2,2048))
+ }
+ @Test fun silenceEndpointResetsAfterNewSpeechAndNeverCutsOngoingCommand() {
+  var now=0L
+  val endpoint=CommandEndpoint({now})
+  val voice=ByteArray(2048) {if(it%2==0) 0 else 16}
+  val quiet=ByteArray(2048)
+  repeat(50) {endpoint.accept(quiet,quiet.size);now+=100_000_000L}
+  assertFalse(endpoint.speechDetected);assertFalse(endpoint.reached)
+  repeat(5) {endpoint.accept(voice,voice.size);now+=100_000_000L}
+  assertTrue(endpoint.speechDetected)
+  repeat(120) {endpoint.accept(voice,voice.size);now+=100_000_000L;assertFalse(endpoint.reached)}
+  now+=3_800_000_000L;endpoint.accept(quiet,quiet.size);assertFalse(endpoint.reached)
+  endpoint.accept(voice,voice.size)
+  now+=3_999_999_999L;endpoint.accept(quiet,quiet.size);assertFalse(endpoint.reached)
+  now++;assertTrue(endpoint.reached)
+ }
+ @Test fun micReadyCueRequiresRecordingAndDrainsBeforePcmAdmission()=runBlocking {
+  val events=mutableListOf<String>()
+  assertFalse(MicReadyCueGate.play(false,{events.add("tone");true},{events.add("drain")}))
+  assertTrue(events.isEmpty())
+  assertTrue(MicReadyCueGate.play(true,{events.add("tone");true},{events.add("drain")}))
+  events.add("admit-pcm")
+  assertEquals(listOf("tone","drain","admit-pcm"),events)
+  assertFalse(MicReadyCueGate.play(true,{false},{error("must not drain absent cue")}))
  }
  @Test fun notificationTransitionsFailClosedAtEveryCheck() {
   val allowed={permission:Boolean,enabled:Boolean,importance:Int?->NotificationAvailability.evaluate(permission,enabled,importance)}

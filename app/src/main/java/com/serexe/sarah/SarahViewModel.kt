@@ -23,9 +23,8 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
  private val commandEligible:(Boolean)->Boolean={true},
  private val beforePlayback:suspend ()->Unit={},
  private val rearmListener:()->Unit={},
- private val autoTimeoutMs:Long=8000L,
  private val abortWindow:()->Unit={}):AndroidViewModel(app) {
- constructor(app:Application):this(app,Vault(app),{url,token,ca->Bridge(url,token,ca)},{interrupted->Capture(app,interrupted)},{done->Playback(app,done)},CoroutineScope(SupervisorJob()+Dispatchers.Main.immediate),Dispatchers.IO,{wake->AudioEligibility.allowed(app,wake)},{HeySarahListenerService.awaitIdle()},{HeySarahListenerService.start(app,true,true)},8000L,{HeySarahListenerService.stop(app)})
+ constructor(app:Application):this(app,Vault(app),{url,token,ca->Bridge(url,token,ca)},{interrupted->Capture(app,interrupted,true)},{done->Playback(app,done)},CoroutineScope(SupervisorJob()+Dispatchers.Main.immediate),Dispatchers.IO,{wake->AudioEligibility.allowed(app,wake)},{HeySarahListenerService.awaitIdle()},{HeySarahListenerService.start(app,true,true)},{HeySarahListenerService.stop(app)})
  data class Ui(val phase:String="disconnected",val status:String="Set up HTTPS bridge",val conversation:String?=null,val transcript:List<Pair<String,String>> = emptyList(),val hasConfig:Boolean=false,val confirmation:JSONObject?=null,val canCapture:Boolean=false)
  private val generation=AtomicLong()
  private val _ui=MutableStateFlow(Ui());val ui=_ui.asStateFlow()
@@ -33,7 +32,7 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
  private var bridge:BridgePort?=null
  private var capture:AudioCapture?=null
  private var captureJob:Job?=null
- private var autoJob:Job?=null
+
  private var job:Job?=null
  private var foreground=false
  private var authenticated=false
@@ -116,7 +115,7 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
   state.put("messages",kept);save();_ui.value=_ui.value.copy(transcript=messages())
  }
  private fun owner(g:Long,c:String,r:String):Boolean=foreground && !serviceBusy() && generation.get()==g && state.optString("conversation")==c && state.optString("request")==r
- private fun stopOperations() { if(healthState=="inflight") healthState="canceled";generation.incrementAndGet();autoJob?.cancel();autoJob=null;if(wakeCapture) runCatching {abortWindow()};wakeCapture=false;job?.cancel();job=null;capture?.stop();captureJob?.cancel();captureJob=null;capture?.discard();capture=null;playback.stop() }
+ private fun stopOperations() { if(healthState=="inflight") healthState="canceled";generation.incrementAndGet();if(wakeCapture) runCatching {abortWindow()};wakeCapture=false;job?.cancel();job=null;capture?.stop();captureJob?.cancel();captureJob=null;capture?.discard();capture=null;playback.stop() }
  private fun rearmIfEligible() {
   val should=wakeCapture && foreground && authenticated && _ui.value.phase=="done" && commandEligible(true)
   wakeCapture=false
@@ -190,21 +189,22 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
   if(!commandEligible(fromWake)) return
   stopOperations();wakeCapture=fromWake;val g=generation.get();val c=captureFactory {scope.launch {routeInterrupted()}};capture=c
   if(c is Capture) c.eligibility={commandEligible(fromWake)}
-  show("recording",if(fromWake) "Recording command · auto-send after 8 seconds; stop or discard anytime" else "Recording · stop and send or discard")
-  captureJob=scope.launch {try {c.record();if(c.capped && foreground && generation.get()==g) { if(wakeCapture) abortWindow();c.discard();capture=null;show("ready","30-second limit reached. Recording discarded; tap again.") }} catch (_:Exception) {if(foreground && generation.get()==g && _ui.value.phase=="recording") {if(wakeCapture) abortWindow();c.discard();capture=null;show("error","Microphone interrupted or 16 kHz input unavailable")}} }
-  if(fromWake) autoJob=scope.launch {
-   delay(autoTimeoutMs)
+  show("recording","Recording · sends after 4 seconds of silence following speech; stop or discard anytime")
+  captureJob=scope.launch {try {
+   c.record()
    if(foreground && generation.get()==g && capture===c && _ui.value.phase=="recording") {
-    if(c.speechDetected) send() else discard()
+    if(c.capped) {if(wakeCapture) abortWindow();c.discard();capture=null;show("ready","30-second limit reached. Recording discarded; tap again.")}
+    else if(c.endpointReached && c.speechDetected) send()
+    else {if(wakeCapture) abortWindow();c.discard();capture=null;show("ready","Recording ended without speech; nothing sent")}
    }
-  }
+  } catch (_:Exception) {if(foreground && generation.get()==g && _ui.value.phase=="recording") {if(wakeCapture) abortWindow();c.discard();capture=null;show("error","Microphone interrupted or 16 kHz input unavailable")}} }
  }
  fun discard() {if(_ui.value.phase=="recording") {if(wakeCapture) abortWindow();stopOperations();show("ready","Recording discarded")}}
  fun send() {
   if (!foreground || OffscreenOwnership.held() || leaseEpoch!=OffscreenOwnership.epoch() || _ui.value.phase!="recording") return
   if(!commandEligible(wakeCapture)) {discard();return}
   val c=capture ?:return;val recordingJob=captureJob;val g=generation.get()
-  autoJob?.cancel();autoJob=null
+
   show("finalizing","Finishing recording")
   c.stop()
   job=scope.launch {
