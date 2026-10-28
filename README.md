@@ -1,6 +1,6 @@
-# S.A.R.A.H Android — code26 source checkpoint
+# S.A.R.A.H Android — active development
 
-Kotlin/Compose client for a separately operated HTTPS voice bridge. Current source declares `com.serexe.sarah`, `versionCode 26`, `versionName 0.1.25-soft-cue-review`. Code23–26 source includes adaptive speech endpointing, wake-stage fixes, and a softer mic-ready cue. Josh tested the code26 review APK on his phone, reported “Much better,” and approved committing this version. This is a **source checkpoint**, not a new release/tag, production promotion, or reproduced APK. See [CODE26-CHECKPOINT.md](CODE26-CHECKPOINT.md) for exact artifact association and proof limits; [CODE22-REVIEW.md](CODE22-REVIEW.md) remains historical.
+**This is the current Android S.A.R.A.H voice-assistant development repository, not a historical-only archive.** The Kotlin/Compose client connects to a separately operated HTTPS voice bridge. Current source declares `com.serexe.sarah`, `versionCode 26`, `versionName 0.1.25-soft-cue-review`. Current code23–26 work includes adaptive speech endpointing, wake-stage fixes, and the code26 softer mic-ready cue. Josh tested the code26 review APK on his phone, reported “Much better,” and approved committing this version. The current source is a **review checkpoint**, not a new release/tag, production promotion, or reproduced APK. See [CODE26-CHECKPOINT.md](CODE26-CHECKPOINT.md) for exact artifact association and proof limits; [CODE22-REVIEW.md](CODE22-REVIEW.md) and older code8 assets remain historical.
 
 ## What this source does
 
