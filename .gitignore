@@ -13,6 +13,10 @@ local.properties
 *.env
 .env*
 *.apk
+*.aar
+*.so
+*.pcm
+app/src/androidTest/assets/
 *.aab
 *.log
 *.hprof

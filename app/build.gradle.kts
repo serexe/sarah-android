@@ -1,3 +1,5 @@
+import java.security.MessageDigest
+
 plugins { id("com.android.application"); id("org.jetbrains.kotlin.android"); id("org.jetbrains.kotlin.plugin.compose") }
 android {
  namespace = "com.serexe.sarah"
@@ -11,7 +13,7 @@ android {
    keyPassword = storePassword
   }
  }
- defaultConfig { applicationId = "com.serexe.sarah"; minSdk = 26; targetSdk = 35; versionCode = 3; versionName = "0.1.2-review"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner" }
+ defaultConfig { applicationId = "com.serexe.sarah"; minSdk = 26; targetSdk = 35; versionCode = 21; versionName = "0.1.20-owner-identity-review"; testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"; ndk { abiFilters += listOf("arm64-v8a", "x86_64") } }
  buildTypes { getByName("debug") { signingConfig = signingConfigs.getByName("localReview") }; release { isMinifyEnabled = false } }
  compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
  kotlinOptions { jvmTarget = "17" }
@@ -19,7 +21,16 @@ android {
  packaging { resources.excludes += "/META-INF/{AL2.0,LGPL2.1}" }
  testOptions { unitTests.isReturnDefaultValues = true }
 }
+val verifySherpaAar by tasks.registering {
+ doLast {
+  val digest = MessageDigest.getInstance("SHA-256").digest(file("libs/sherpa-onnx-2.0.1.aar").readBytes()).joinToString("") { "%02x".format(it) }
+  check(digest == "a8d09d1d32f3eb8520482c6d3d43fae674681c5b050385967c70a3c2c9bf0ee7") { "Pinned sherpa-onnx AAR checksum mismatch" }
+ }
+}
+tasks.named("preBuild") { dependsOn(verifySherpaAar) }
+
 dependencies {
+ implementation(files("libs/sherpa-onnx-2.0.1.aar"))
  implementation(platform("androidx.compose:compose-bom:2025.04.01"))
  implementation("androidx.activity:activity-compose:1.10.1")
  implementation("androidx.compose.ui:ui")

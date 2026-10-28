@@ -13,7 +13,7 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 /** Whole state is encrypted and atomically replaced before network submission. No plaintext fallback. */
-class Vault(private val context:Context):StateStore {
+class Vault(private val context:Context,private val owner:Any?=null):StateStore {
  private val file=AtomicFile(File(context.filesDir,"state.enc"))
  private fun key():SecretKey {
   val ks=KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
@@ -22,13 +22,15 @@ class Vault(private val context:Context):StateStore {
    init(KeyGenParameterSpec.Builder("sarah-v1",KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT).setBlockModes(KeyProperties.BLOCK_MODE_GCM).setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE).setKeySize(256).build())
   }.generateKey()
  }
- @Synchronized override fun load():JSONObject {
+ override fun load():JSONObject=OffscreenOwnership.guarded(owner) { readState() }
+ @Synchronized private fun readState():JSONObject {
   if (!file.baseFile.exists()) return JSONObject()
   val all=file.openRead().use { it.readBytes() }; require(all.size>28 && all.size<524288)
   val cipher=Cipher.getInstance("AES/GCM/NoPadding");cipher.init(Cipher.DECRYPT_MODE,key(),GCMParameterSpec(128,all.copyOfRange(0,12)))
   return JSONObject(String(cipher.doFinal(all.copyOfRange(12,all.size)),Charsets.UTF_8))
  }
- @Synchronized override fun save(value:JSONObject) {
+ override fun save(value:JSONObject)=OffscreenOwnership.guarded(owner) { writeState(value) }
+ @Synchronized private fun writeState(value:JSONObject) {
   // AndroidKeyStore AES-GCM disallows caller-supplied encryption nonces by default.
   val cipher=Cipher.getInstance("AES/GCM/NoPadding");cipher.init(Cipher.ENCRYPT_MODE,key())
   val nonce=cipher.iv.also { require(it.size==12) }
@@ -36,7 +38,8 @@ class Vault(private val context:Context):StateStore {
   val out=file.startWrite()
   try { out.write(bytes);file.finishWrite(out) } catch (e:Exception) { file.failWrite(out);throw e }
  }
- @Synchronized override fun reset() {
+ override fun reset()=OffscreenOwnership.guarded(owner) { deleteState() }
+ @Synchronized private fun deleteState() {
   file.delete()
   KeyStore.getInstance("AndroidKeyStore").apply {load(null);deleteEntry("sarah-v1")}
  }

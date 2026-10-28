@@ -20,6 +20,7 @@ interface StateStore {
 }
 interface AudioCapture {
  val capped:Boolean
+ val speechDetected:Boolean get()=true
  suspend fun record()
  fun stop()
  fun finish():ByteArray

@@ -1,93 +1,23 @@
-# S.A.R.A.H Android — historical code3 source
+# S.A.R.A.H Android — current build21 source snapshot
 
-Restored historical Kotlin/Compose Android client for an HTTPS voice bridge.
-This is the **pre-wake, foreground tap-to-talk** source: application ID
-`com.serexe.sarah`, versionCode `3`, versionName `0.1.2-review`.
-It is not the current development tree and is not a wakeword/always-listening assistant.
+Kotlin/Compose client for a separately operated HTTPS voice bridge. Current source declares `com.serexe.sarah`, `versionCode 21`, `versionName 0.1.20-owner-identity-review`. Josh reported the build21 review APK **works on his phone**. This is a source publication of that approved development snapshot, not a new build, retest, APK release, production deployment, or guarantee that every voice path works on every device. The published source is not a reproducible signed-APK attestation.
 
-## Current approved icon
+## What this source does
 
-<p><img src="app/src/main/res/mipmap-xxxhdpi/ic_launcher.png" alt="SARAH launcher icon: luminous cyan and violet house surrounding an S-shaped orb" width="160"></p>
+- Foreground tap-to-talk, encrypted local pairing state, authenticated HTTPS bridge health/upload and reply playback; unknown upload admission is not blindly retried.
+- Opt-in **Hey Sarah** offline keyword listener with Android foreground-service notification and explicit Stop; listener, capture, and playback ownership gates guard handoffs. Manual tap remains fallback. Assistant-role gesture opens the app; it does not itself grant recording permission.
+- Code21 corrects an offscreen cleanup owner-reference error (`this@OffscreenCommand`) after native ACK. The development report records focused unit tests, full unit suite/lint, a debug build, and one scoped exact-APK synthetic emulator service/Stop proof before phone handoff. Phone approval is user-reported; this publication did not independently repeat physical acoustic wake, STT/TTS, audible output, black-screen or sustained battery/reliability trials.
 
-The actual launcher resource above uses the [owner-approved original artwork](artwork/launcher-artwork-original.png)
-already preserved in this historical code3 source. A read-only comparison with the current development tree found the
-original artwork and all 18 launcher resource files **byte-identical**. No launcher
-files were replaced, and no APK was rebuilt for this documentation update.
+Microphone requires opt-in/permission. Do not put provider or home secrets on the device; use a revocable bridge token. Local reset does not erase server history, and OS cache may retain temporary reply audio after process death. No live bridge endpoint, token, private CA, signer or personal transcript is published.
 
-## Screenshots — historical code3, pre-wake
+## Build source and limits
 
-These are **two authentic emulator captures of `0.1.2-review` (code3)**, not
-mockups or current-development screenshots. The visible transcript and reply were
-seeded synthetic fixtures, not personal conversations or evidence of a live voice
-exchange. No wakeword/always-listening UI is shown.
+JDK 17, Android SDK 35 and Gradle 8.11.1 wrapper. The **compiled upstream sherpa-onnx AAR is intentionally not in Git**. Retrieve the official v2.0.1 artifact from the URL in [KWS-DEPENDENCIES.md](KWS-DEPENDENCIES.md) as `app/libs/sherpa-onnx-2.0.1.aar` and verify SHA-256 `a8d09d1d32f3eb8520482c6d3d43fae674681c5b050385967c70a3c2c9bf0ee7` before building; Gradle's `verifySherpaAar` task also rejects a mismatch. Model inference assets and required notice texts are included under `app/src/main/assets/`. SDKs, downloaded dependencies and caches are not included.
 
-| Foreground tap-to-talk | Local pairing confirmation |
-| --- | --- |
-| [![Code3 foreground tap-to-talk with synthetic transcript and reply](docs/screenshots/code3-tap-to-talk.png)](docs/screenshots/code3-tap-to-talk.png) | [![Code3 Clear local pairing confirmation](docs/screenshots/code3-clear-pairing.png)](docs/screenshots/code3-clear-pairing.png) |
+`app/build.gradle.kts` retains its local review signing configuration, which reads `.local-review/review.jks` and `.local-review/signing-pass`. Those files are private and absent. A separately approved local signer is required for the configured signed debug build; do not regenerate or publish the phone-approved signer. Do not treat a locally rebuilt APK as identical to the phone-approved APK. Android instrumentation/device-fixture tests are omitted from this public current snapshot because their audio fixtures and test-server PKCS#12 private key are excluded. Historical `ScreenshotPolicyTest.kt` remains from code3; the published unit tests under `app/src/test/` are source only and were not rerun for publication. Build and test histories refer to the separate local development workspace, not this checkout.
 
-The second capture shows the confirmation opened by **Connection settings**;
-it is not an editable connection form. The historical capture did not clear pairing.
-Both images were visually reviewed for private endpoints, tokens, account IDs and
-personal conversation; none were visible, so no redaction was needed.
-See [screenshot provenance](docs/screenshots/PROVENANCE.md) for exact hashes and
-limits. These old captures are not new runtime, phone or build verification.
+## Repository history and licensing
 
-## Historical artifact identity — not a reproducibility claim
+This commit updates the tracked application source from historical code3 to build21 while preserving prior commits, screenshots, `CODE3-*` records, existing `historical-code8` release/tag/assets, and the historical code8 [COVERED-SOURCE.md](COVERED-SOURCE.md), [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md), and `notices/` tree. **Those documents and the code8 APK refer to separate historical artifacts, not a build produced from current source.** See [CODE21-PUBLICATION.md](CODE21-PUBLICATION.md) for exact current snapshot scope and retained native notices. The older [docs/screenshots](docs/screenshots/) images show code3 only.
 
-The original delivered code3 APK was version `0.1.2-review`, with SHA-256:
-
-```text
-f6a493e30d6612ba96713d6543f5e7e59c98d24ec0f8472cc8bc13cb107fcc7e
-```
-
-This publication restores historical source/readbacks and preserved launcher resources.
-**It has not been rebuilt, retested, analyzed, compiled, installed or run for this publication.**
-No claim is made that building it produces the original signed APK bytes, or that every
-undocumented historical filesystem file was recovered. Included tests are historical
-source only; their presence does not mean they were run now.
-
-The repository's **code8 release (`historical-code8`) is a separate historical artifact,
-NOT generated by this source**. Existing code8 covered-source, notice and release
-documents remain applicable to that separate artifact and must be retained. This source
-publication does not replace or relabel existing releases, tags or APK assets.
-
-## Signing and toolchain limitation
-
-To preserve historical source, `app/build.gradle.kts` is unchanged. Its debug signing
-configuration references `.local-review/review.jks` and `.local-review/signing-pass`.
-**Those private files are intentionally absent. The historical debug-signing setup is
-not portable as published and signed debug builds require a separate local signing
-configuration.** The `not-configured` value is a historical missing-input placeholder,
-not a usable password. Do not copy or publish the original signer or credentials.
-No standard-debug-signing delta or application/runtime edit was applied.
-
-Declared toolchain inputs: JDK 17, Android SDK 35, Android Gradle plugin 8.9.2,
-Kotlin 2.0.21 and Gradle 8.11.1. The wrapper and dependency declarations are retained;
-SDKs, downloaded dependencies, caches and build outputs are not bundled. Toolchain
-availability and build success were not verified during publication preparation.
-
-## Intended interaction and privacy boundaries
-
-Historical source uses an explicit foreground tap and Android microphone permission.
-It accepts a user-provided HTTPS bridge origin and a distinct revocable device token;
-no bridge server or credentials are included. Stop & send uploads captured audio;
-background/discard paths intend to discard capture. Local pairing state uses Android
-Keystore encryption, and reply playback uses temporary app cache. These describe
-source intent, not newly verified runtime or security guarantees. Reset does not
-remove server history, and process death can leave temporary OS cache until eviction.
-Do not pair production systems on the basis of this publication alone.
-
-## License and retained dependencies
-
-Owner-controlled source and owner-approved launcher artwork: MIT,
-**Copyright (c) 2026 serexe**; see [LICENSE](LICENSE). This owner grant was added for
-publication, not recovered from historical source.
-
-Third-party material keeps its own licenses. Gradle wrapper retains its original
-notices and bundled Apache-2.0 license; a readable copy is in
-[CODE3-GRADLE-APACHE-2.0.txt](CODE3-GRADLE-APACHE-2.0.txt).
-See [DEPENDENCIES.md](DEPENDENCIES.md),
-[CODE3-THIRD-PARTY-NOTICES.md](CODE3-THIRD-PARTY-NOTICES.md) and
-[CODE3-PUBLICATION.md](CODE3-PUBLICATION.md). This is not a transitive license clearance
-or an APK distribution clearance. In particular, the historical test-only `org.json`
-dependency carries the JSON.org license, not MIT.
+Owner-controlled source/artwork: [MIT LICENSE](LICENSE); third-party components and model keep separate terms. [KWS-DEPENDENCIES.md](KWS-DEPENDENCIES.md) records sherpa/model provenance; [DEPENDENCIES.md](DEPENDENCIES.md) records declared dependencies; `app/src/main/assets/licenses/` includes sherpa Apache-2.0, ONNX Runtime MIT and its ThirdPartyNotices. No APK or compiled native AAR is committed by this snapshot. Nothing here changes or promotes a release.
