@@ -12,7 +12,7 @@ import android.media.AudioFocusRequest
 import android.media.AudioAttributes
 import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
-import android.media.ToneGenerator
+import android.media.AudioTrack
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -27,6 +27,7 @@ import kotlin.coroutines.coroutineContext
 
 /** No file written. Stop/discard clears in-memory PCM; hard cap never auto-sends. */
 class Capture(private val context:Context,private val onInterrupted:()->Unit = {},private val commandLimit:Boolean=false):AudioCapture {
+ var onMicReady:(MicReadyCueGate.Result)->Unit = {}
  @Volatile private var recorder:AudioRecord?=null
  @Volatile internal var releaseComplete=true;private set
  private val buffer=ByteArrayOutputStream()
@@ -87,24 +88,41 @@ class Capture(private val context:Context,private val onInterrupted:()->Unit = {
     }
    })
    val chunk=ByteArray(2048)
-   // The mic is already recording. ToneGenerator needs no second AudioArbiter owner
-   // or audio-focus request. Drain mic PCM through the short tone and acoustic tail.
-   val tone=ToneGenerator(AudioManager.STREAM_NOTIFICATION,70)
+   // Explicit media route, not notification/ringer volume. Reuse capture's assistant
+   // focus and AudioArbiter owner; never change global stream volume or DND.
+   val muted=MicReadyCueGate.outputMuted(manager.getStreamVolume(AudioManager.STREAM_MUSIC),
+    manager.isStreamMute(AudioManager.STREAM_MUSIC))
+   var cue:AudioTrack?=null
    try {
-    check(MicReadyCueGate.play(r.recordingState==AudioRecord.RECORDSTATE_RECORDING,
-     {tone.startTone(ToneGenerator.TONE_PROP_BEEP,120)}) {
-      val until=SystemClock.elapsedRealtime()+350L
+    val result=MicReadyCueGate.play(r.recordingState==AudioRecord.RECORDSTATE_RECORDING && eligible(),muted,
+     {
+      val pcm=MicReadyPcm.samples()
+      AudioTrack.Builder().setAudioAttributes(AudioAttributes.Builder()
+       .setUsage(AudioAttributes.USAGE_MEDIA).setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION).build())
+       .setAudioFormat(AudioFormat.Builder().setSampleRate(MicReadyPcm.RATE)
+        .setEncoding(AudioFormat.ENCODING_PCM_16BIT).setChannelMask(AudioFormat.CHANNEL_OUT_MONO).build())
+       .setTransferMode(AudioTrack.MODE_STATIC).setBufferSizeInBytes(pcm.size*2).build().also {track->
+        cue=track
+        // MODE_STATIC starts in STATE_NO_STATIC_DATA; write transitions to INITIALIZED.
+        check(track.state==AudioTrack.STATE_NO_STATIC_DATA || track.state==AudioTrack.STATE_INITIALIZED)
+        check(track.write(pcm,0,pcm.size)==pcm.size && track.state==AudioTrack.STATE_INITIALIZED)
+        track.play()
+       }
+      true
+     }) {
+      val until=SystemClock.elapsedRealtime()+MicReadyPcm.DRAIN_MS
       while(SystemClock.elapsedRealtime()<until && !stopping && coroutineContext.isActive) {
        if(!eligible()) {interrupt();break}
        val count=r.read(chunk,0,chunk.size,AudioRecord.READ_NON_BLOCKING)
        if(count<0 && !stopping) throw IllegalStateException("Microphone interrupted")
        if(count==0) kotlinx.coroutines.delay(10)
       }
-     }) {"Microphone readiness cue unavailable"}
-   } finally {tone.stopTone();tone.release()}
+     }
+    check(result!=MicReadyCueGate.Result.FAILED && !stopping && coroutineContext.isActive) {"Microphone readiness cue unavailable"}
+    onMicReady(result) // Native recording confirmed; cue/tail excluded before any readiness claim.
+   } finally {cue?.let {runCatching {it.stop()};it.release()}}
    while (coroutineContext.isActive && !capped && !stopping) {
     if(limit?.expired==true) {capped=true;break}
-    if(commandLimit && endpoint.reached) {endpointReached=true;break}
     if(!eligible()) {interrupt();break}
     val n=r.read(chunk,0,chunk.size,AudioRecord.READ_NON_BLOCKING)
     if(!eligible()) {interrupt();break}
@@ -116,6 +134,8 @@ class Capture(private val context:Context,private val onInterrupted:()->Unit = {
      val permitted=limit?.bytesAllowed(buffer.size(),n) ?: minOf(n,left)
      buffer.write(chunk,0,minOf(permitted,left));if (buffer.size()>=Wav.MAX_SAMPLES*2) capped=true
     }
+    // Admit fresh PCM first, so renewed activity resets the pause before deciding.
+    if(commandLimit && endpoint.reached) {endpointReached=true;break}
    }
    check(!interrupted) {"Microphone interrupted"}
   } catch(e:Exception) {interrupted=true;throw e}

@@ -47,28 +47,15 @@ internal class CommandCaptureLimit(private val startedNanos:Long,private val clo
  }
 }
 
-/** PCM energy is a speech-presence heuristic, not transcription or wake recognition. */
-internal class CommandEndpoint(private val clock:()->Long,
- private val silenceNanos:Long=4_000_000_000L) {
- private var voicedChunks=0
- private var lastVoice:Long?=null
- val speechDetected:Boolean get()=voicedChunks>=5
- val reached:Boolean get()=speechDetected && lastVoice?.let {clock()-it>=silenceNanos}==true
- fun accept(pcm:ByteArray,count:Int) {
-  var energy=0L;var samples=0;var i=0
-  while(i+1<count) {
-   val v=((pcm[i].toInt() and 255) or (pcm[i+1].toInt() shl 8)).toShort().toInt()
-   energy+=kotlin.math.abs(v);samples++;i+=2
-  }
-  if(samples>0 && energy/samples>600) {voicedChunks++;lastVoice=clock()}
- }
-}
-
 /** Cue is permitted only after native recording is confirmed, before any PCM is kept. */
-internal object MicReadyCueGate {
- suspend fun play(recording:Boolean,start:()->Boolean,drain:suspend ()->Unit):Boolean {
-  if(!recording || !start()) return false
-  drain()
-  return true
+object MicReadyCueGate {
+ enum class Result { PLAYED, OUTPUT_MUTED, FAILED }
+ fun outputMuted(volume:Int,streamMuted:Boolean)=volume<=0 || streamMuted
+ suspend fun play(recording:Boolean,muted:Boolean,start:()->Boolean,drain:suspend ()->Unit):Result {
+  if(!recording) return Result.FAILED
+  if(muted) return Result.OUTPUT_MUTED
+  if(!start()) return Result.FAILED
+  drain() // No command PCM is admitted until cue and acoustic tail have passed.
+  return Result.PLAYED
  }
 }

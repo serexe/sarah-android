@@ -18,6 +18,19 @@ import kotlin.coroutines.CoroutineContext
 
 /** Production safety helpers, production Bridge, and production ViewModel paths. */
 class OffscreenRemediationTest {
+ @Test fun offscreenEmittedStagesPassProductionValidationButUnknownIsRejected() {
+  val source=File("src/main/java/com/serexe/sarah/OffscreenCommand.kt").readText()
+  // Read the production emitter, not a separately maintained test-only allowlist.
+  val literal=Regex("stage\\(\\\"([^\\\"]+)\\\"\\)").findAll(source).map {it.groupValues[1]}.toSet()
+  val cue=Regex("stage\\(if\\(cue==MicReadyCueGate.Result.OUTPUT_MUTED\\) \\\"([^\\\"]+)\\\" else \\\"([^\\\"]+)\\\"\\)")
+   .find(source) ?: error("offscreen mic-ready branch missing")
+  val emitted=literal+cue.groupValues.drop(1)+setOf("error","cancelled","uncertain") // row state branch
+  assertTrue("starting stage missing from production emitter", "starting-command-mic" in emitted)
+  assertTrue("muted stage missing from production emitter", "recording-media-muted" in emitted)
+  val rejected=emitted.filter {runCatching {StageTrail.validate(it)}.isFailure}
+  assertEquals("offscreen labels rejected by production stage validation", emptyList<String>(), rejected)
+  assertThrows(IllegalArgumentException::class.java) {StageTrail.validate("unknown-stage")}
+ }
  @Test fun cancelBeforeCommandDispatchStillRunsProductionFinallyAndRequiresNativeAck()=runBlocking {
   // Guard the production call site too: launchOwned's receiver is a CoroutineScope,
   // not the OffscreenCommand that acquired the identity-based lease.
@@ -68,24 +81,69 @@ class OffscreenRemediationTest {
   val endpoint=CommandEndpoint({now})
   val voice=ByteArray(2048) {if(it%2==0) 0 else 16}
   val quiet=ByteArray(2048)
-  repeat(50) {endpoint.accept(quiet,quiet.size);now+=100_000_000L}
+  repeat(50) {now+=64_000_000L;endpoint.accept(quiet,quiet.size)}
   assertFalse(endpoint.speechDetected);assertFalse(endpoint.reached)
-  repeat(5) {endpoint.accept(voice,voice.size);now+=100_000_000L}
+  repeat(5) {now+=64_000_000L;endpoint.accept(voice,voice.size)}
   assertTrue(endpoint.speechDetected)
-  repeat(120) {endpoint.accept(voice,voice.size);now+=100_000_000L;assertFalse(endpoint.reached)}
-  now+=3_800_000_000L;endpoint.accept(quiet,quiet.size);assertFalse(endpoint.reached)
-  endpoint.accept(voice,voice.size)
-  now+=3_999_999_999L;endpoint.accept(quiet,quiet.size);assertFalse(endpoint.reached)
-  now++;assertTrue(endpoint.reached)
+  repeat(120) {now+=64_000_000L;endpoint.accept(voice,voice.size);assertFalse(endpoint.reached)}
+  repeat(20) {now+=64_000_000L;endpoint.accept(quiet,quiet.size);assertFalse(endpoint.reached)}
+  now+=64_000_000L;endpoint.accept(voice,voice.size);assertFalse(endpoint.reached)
+  repeat(30) {now+=64_000_000L;endpoint.accept(quiet,quiet.size);assertFalse(endpoint.reached)}
+  repeat(5) {now+=64_000_000L;endpoint.accept(quiet,quiet.size)}
+  assertTrue(endpoint.reached)
  }
  @Test fun micReadyCueRequiresRecordingAndDrainsBeforePcmAdmission()=runBlocking {
   val events=mutableListOf<String>()
-  assertFalse(MicReadyCueGate.play(false,{events.add("tone");true},{events.add("drain")}))
+  assertEquals(MicReadyCueGate.Result.FAILED,MicReadyCueGate.play(false,false,{events.add("cue");true},{events.add("drain")}))
   assertTrue(events.isEmpty())
-  assertTrue(MicReadyCueGate.play(true,{events.add("tone");true},{events.add("drain")}))
+  assertEquals(MicReadyCueGate.Result.PLAYED,MicReadyCueGate.play(true,false,{events.add("cue");true},{events.add("drain")}))
   events.add("admit-pcm")
-  assertEquals(listOf("tone","drain","admit-pcm"),events)
-  assertFalse(MicReadyCueGate.play(true,{false},{error("must not drain absent cue")}))
+  assertEquals(listOf("cue","drain","admit-pcm"),events)
+  assertEquals(MicReadyCueGate.Result.FAILED,MicReadyCueGate.play(true,false,{false},{error("must not drain absent cue")}))
+  assertEquals(MicReadyCueGate.Result.OUTPUT_MUTED,MicReadyCueGate.play(true,true,
+   {error("muted route must not queue cue")},{error("muted route must not drain")}) )
+  assertEquals(listOf("cue","drain","admit-pcm"),events)
+  assertThrows(IllegalStateException::class.java) {runBlocking {
+   MicReadyCueGate.play(true,false,{throw IllegalStateException("audio output failed")},{error("no admission")})
+  }}
+  assertTrue(MicReadyCueGate.outputMuted(0,false))
+  assertTrue(MicReadyCueGate.outputMuted(7,true))
+  assertFalse(MicReadyCueGate.outputMuted(7,false))
+  val pcm=MicReadyPcm.samples()
+  assertEquals(MicReadyPcm.RATE*180/1000,pcm.size)
+  assertTrue("cue shorter than 500 ms drain",pcm.size*1000/MicReadyPcm.RATE<MicReadyPcm.DRAIN_MS)
+  assertEquals(0,pcm.first().toInt());assertEquals(0,pcm.last().toInt())
+  val peak=pcm.maxOf {kotlin.math.abs(it.toInt())}
+  assertTrue("audible but not aggressive peak: $peak",peak in 2500..6500)
+  assertTrue("no clipping",pcm.all {it.toInt() in -6500..6500})
+  assertTrue("positive and negative excursions",pcm.any {it>2000} && pcm.any {it< -2000})
+  val mean=pcm.map {it.toInt()}.average()
+  assertTrue("DC offset: $mean",kotlin.math.abs(mean)<35)
+  val middle=pcm.slice(MicReadyPcm.RATE*55/1000 until MicReadyPcm.RATE*100/1000)
+   .maxOf {kotlin.math.abs(it.toInt())}
+  val head=pcm.take(MicReadyPcm.RATE*5/1000).maxOf {kotlin.math.abs(it.toInt())}
+  val tail=pcm.takeLast(MicReadyPcm.RATE*5/1000).maxOf {kotlin.math.abs(it.toInt())}
+  assertTrue("gentle rounded attack: $head vs $middle",head<middle/5)
+  assertTrue("gentle rounded release: $tail vs $middle",tail<middle/10)
+  val maxStep=(1 until pcm.size).maxOf { i->kotlin.math.abs(pcm[i].toInt()-pcm[i-1].toInt()) }
+  assertTrue("no discontinuous edge or piercing transient: $maxStep",maxStep<1100)
+  fun crossingFrequency(startMs:Int,endMs:Int):Double {
+   val section=pcm.slice(MicReadyPcm.RATE*startMs/1000 until MicReadyPcm.RATE*endMs/1000)
+   val crossings=section.zipWithNext().count {(a,b)->a<=0 && b>0}
+   return crossings.toDouble()*1000/(endMs-startMs)
+  }
+  for ((start,end) in listOf(40 to 100,100 to 160)) {
+   val frequency=crossingFrequency(start,end)
+   assertTrue("stable low-pitch dominant frequency: $frequency Hz",frequency in 350.0..440.0)
+  }
+  // Production route and order are not a parallel mock cue path.
+  val capture=File("src/main/java/com/serexe/sarah/Capture.kt").readText()
+  assertTrue(capture.contains("AudioAttributes.USAGE_MEDIA"))
+  assertTrue(capture.contains("AudioManager.STREAM_MUSIC"))
+  assertFalse(capture.contains("STREAM_NOTIFICATION"))
+  assertTrue(capture.indexOf("r.startRecording()")<capture.indexOf("MicReadyCueGate.play("))
+  assertTrue(capture.indexOf("MicReadyCueGate.play(")<capture.indexOf("endpoint.accept(chunk,n)"))
+  assertFalse(capture.contains("setStreamVolume("))
  }
  @Test fun notificationTransitionsFailClosedAtEveryCheck() {
   val allowed={permission:Boolean,enabled:Boolean,importance:Int?->NotificationAvailability.evaluate(permission,enabled,importance)}

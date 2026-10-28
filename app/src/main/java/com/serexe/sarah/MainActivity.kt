@@ -155,7 +155,7 @@ class MainActivity:ComponentActivity() {
     }
    }
 
-   if(listenerConsent) AlertDialog(onDismissRequest={listenerConsent=false},title={Text("Enable local Hey Sarah?")},text={Text("For at most 2 minutes, a foreground microphone service listens locally, including offscreen. No wake buffer is saved/uploaded. On an unlocked wake, the listener microphone releases before command recording with a readiness chime, a 4-second silence endpoint after speech, and a 30-second discard-only safety cap; a completed command is sent once to the paired bridge; reply may play aloud. Locked wake only notifies: no unlock bypass, recording, or automatic confirmation. Stop anytime. Black-screen phone behavior remains unverified.")},confirmButton={TextButton(onClick={
+   if(listenerConsent) AlertDialog(onDismissRequest={listenerConsent=false},title={Text("Enable local Hey Sarah?")},text={Text("For at most 2 minutes, a foreground microphone service listens locally, including offscreen. No wake buffer is saved/uploaded. On an unlocked wake, the listener microphone releases before command recording with a readiness chime, an adaptive 1.6–3.2-second silence endpoint after speech, and a 30-second discard-only safety cap; a completed command is sent once to the paired bridge; reply may play aloud. Locked wake only notifies: no unlock bypass, recording, or automatic confirmation. Stop anytime. Black-screen phone behavior remains unverified.")},confirmButton={TextButton(onClick={
     listenerConsent=false
     val required=if(Build.VERSION.SDK_INT>=33) arrayOf(Manifest.permission.RECORD_AUDIO,Manifest.permission.POST_NOTIFICATIONS) else arrayOf(Manifest.permission.RECORD_AUDIO)
     when(ListenerPermissionFlow.confirmed(required.all {context.checkSelfPermission(it)==PackageManager.PERMISSION_GRANTED})) {
@@ -171,7 +171,7 @@ class MainActivity:ComponentActivity() {
 }
 @Composable private fun ListenerControls(state:String,ui:SarahViewModel.Ui,canStart:Boolean,permissionReady:Boolean,onStart:()->Unit,onStop:()->Unit) {
  Column {
-  Text("Hey Sarah: $state · 2-minute foreground-service window. Unlocked offscreen wake ends after 4 seconds of silence following speech (30-second safety cap), submits once, and speaks. Locked wake notifies only. No physical black-screen proof yet.",style=MaterialTheme.typography.bodySmall)
+  Text("Hey Sarah: $state · 2-minute foreground-service window. Unlocked offscreen wake ends after an adaptive 1.6–3.2-second speech pause (30-second safety cap), submits once, and speaks. Locked wake notifies only. No physical black-screen proof yet.",style=MaterialTheme.typography.bodySmall)
   val context=LocalContext.current
   Text("Local stages (no content): ${StageTrail.read(context).lines().takeLast(3).joinToString(" · ")}",style=MaterialTheme.typography.bodySmall)
   if(state=="off") {
@@ -251,7 +251,7 @@ internal fun formatInstalledVersion(versionName:String?,versionCode:Long):String
 @Composable private fun ActionPanel(ui:SarahViewModel.Ui,vm:SarahViewModel,onMic:()->Unit,denied:Boolean,onSettings:()->Unit) {
  Column(Modifier.fillMaxWidth().imePadding().padding(bottom=12.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
   if(ui.phase=="recording") {
-   Text("Microphone active · 4-second silence endpoint · maximum 30 seconds",style=MaterialTheme.typography.labelMedium)
+   Text(if(ui.status.startsWith("Starting microphone")) "Microphone starting · wait for cue" else "Microphone active · adaptive speech pause · maximum 30 seconds",style=MaterialTheme.typography.labelMedium)
    Button(onClick=vm::send,modifier=Modifier.fillMaxWidth().heightIn(min=72.dp)) {Text("■ Stop & send",style=MaterialTheme.typography.titleMedium)}
    OutlinedButton(onClick=vm::discard,modifier=Modifier.fillMaxWidth().heightIn(min=48.dp)) {Text("Discard recording")}
   } else if(ui.phase=="playing") {

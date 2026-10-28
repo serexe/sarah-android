@@ -45,7 +45,7 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
  internal fun diagnosticSnapshot(versionCode:Long):String {
   val u=_ui.value
   val (listenerAck,commandAck)=HeySarahListenerService.cleanupSnapshot()
-  val listener=HeySarahListenerService.status.value.takeIf {it in setOf("off","starting","Wake listening","hit","released","recording","uploading","polling","speaking","done","stopping","stopped","discarded","error","interrupted","uncertain","fallback","locked","cleanup-failed","confirmation-required","destroyed-cleanup-pending","cancelled") } ?: "other"
+  val listener=HeySarahListenerService.status.value.takeIf {it in setOf("off","starting","Wake listening","hit","released","starting-command-mic","recording","recording-media-muted","uploading","polling","speaking","done","stopping","stopped","discarded","error","interrupted","uncertain","fallback","locked","cleanup-failed","confirmation-required","destroyed-cleanup-pending","cancelled") } ?: "other"
   val phase=u.phase.takeIf {it in setOf("disconnected","ready","done","error","cancelled","uncertain","recording","finalizing","uploading","polling","playing","reply_audio_pending","confirming","creating","cancelling") } ?: "other"
   return listOf("build=$versionCode", "foreground=$foreground", "listener=$listener",
    "phase=$phase", "finishWaiting=${u.status=="Finishing background command"}","canCapture=${u.canCapture}",
@@ -188,8 +188,16 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
   if(!foreground || serviceBusy() && !fromWake || OffscreenOwnership.held() || !authenticated || !_ui.value.canCapture || bridge==null || _ui.value.phase !in listOf("ready","done","error","cancelled") || state.optString("conversation").isEmpty()) return
   if(!commandEligible(fromWake)) return
   stopOperations();wakeCapture=fromWake;val g=generation.get();val c=captureFactory {scope.launch {routeInterrupted()}};capture=c
-  if(c is Capture) c.eligibility={commandEligible(fromWake)}
-  show("recording","Recording · sends after 4 seconds of silence following speech; stop or discard anytime")
+  if(c is Capture) {
+   c.eligibility={commandEligible(fromWake)}
+   c.onMicReady={cue->scope.launch {
+    if(foreground && generation.get()==g && capture===c && _ui.value.phase=="recording")
+     _ui.value=_ui.value.copy(status=if(cue==MicReadyCueGate.Result.OUTPUT_MUTED)
+      "Microphone recording · media output muted; no audible cue. Stop or discard anytime"
+      else "Microphone recording · speak now; sends after an adaptive speech pause")
+   }}
+  }
+  show("recording","Starting microphone · wait for cue; stop or discard anytime")
   captureJob=scope.launch {try {
    c.record()
    if(foreground && generation.get()==g && capture===c && _ui.value.phase=="recording") {

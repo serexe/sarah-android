@@ -61,11 +61,14 @@ internal class OffscreenCommand(
   val vault=Vault(context,this)
   val c=Capture(context,{scope.launch {stage("interrupted");stop()} },true)
   c.eligibility={eligible()}
-  capture=c;stage("recording")
+  c.onMicReady={cue->scope.launch {
+   if(eligible()) stage(if(cue==MicReadyCueGate.Result.OUTPUT_MUTED) "recording-media-muted" else "recording")
+  }}
+  capture=c;stage("starting-command-mic")
   val job=scope.async(Dispatchers.IO,start=CoroutineStart.LAZY) {c.record()}
   recording=job;job.start()
   // Capture remains bounded even if Activity vanishes or screen turns off.
-  // Natural endpoint is four seconds after last speech, not a fixed eight-second window.
+  // Native endpoint uses recorded activity and within-command pauses; cap discards.
   // Capture's independent 30-second PCM/clock cap discards an unended command.
   try {withTimeout(31_000L) {job.await()}}
   catch (_:Exception) {c.discard();job.cancel();throw CancellationException("capture endpoint failed")}
