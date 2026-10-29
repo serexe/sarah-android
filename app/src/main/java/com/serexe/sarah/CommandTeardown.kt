@@ -23,8 +23,8 @@ internal object CommandCleanup {
 /** Surviving explicit window only. Screen interactivity is deliberately not a lock check. */
 internal object ServiceRearmPolicy {
  fun allowed(ownerCurrent:Boolean,stopped:Boolean,destroyed:Boolean,optedStart:Long,now:Long,
-  safe:Boolean,unlocked:Boolean,resolved:Boolean):Boolean =
-  ownerCurrent && !stopped && !destroyed && optedStart!=0L && ListenerWindow(optedStart).valid(now) &&
+  safe:Boolean,unlocked:Boolean,resolved:Boolean,persistent:Boolean=false):Boolean =
+  ownerCurrent && !stopped && !destroyed && optedStart!=0L && ListenerWindow(optedStart,persistent).valid(now) &&
    safe && unlocked && resolved
 }
 

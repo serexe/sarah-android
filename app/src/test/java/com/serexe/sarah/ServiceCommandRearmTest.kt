@@ -8,6 +8,15 @@ import java.util.concurrent.CompletableFuture
 
 /** Real service completion boundary + production listener/command ownership; no Android lifecycle emulation. */
 class ServiceCommandRearmTest {
+ @Test fun persistentSameOwnerRearmsAfterOriginalTwoMinuteBoundaryButNeverAfterStop() {
+  val now=86_401_000L
+  assertTrue(ServiceRearmPolicy.allowed(true,false,false,1000,now,true,true,true,persistent=true))
+  assertFalse(ServiceRearmPolicy.allowed(true,false,false,1000,now,true,true,true))
+  assertFalse(ServiceRearmPolicy.allowed(true,true,false,1000,now,true,true,true,persistent=true))
+  assertFalse(ServiceRearmPolicy.allowed(false,false,false,1000,now,true,true,true,persistent=true))
+  assertFalse(ServiceRearmPolicy.allowed(true,false,false,1000,now,true,false,true,persistent=true))
+  assertFalse(ServiceRearmPolicy.allowed(true,false,false,1000,now,true,true,false,persistent=true))
+ }
  @Test fun sameServiceReturnsToListenerAfterSuccessErrorAndCancelCleanup()=runBlocking {
   var now=10_000L
   val started=now
@@ -104,6 +113,74 @@ class ServiceCommandRearmTest {
   assertTrue(visible.contains("if(!handed) {visibleCommand=null;stage(\"fallback\");notifyWake();finishService()}"))
   assertFalse(visible.contains("startForegroundService("));assertFalse(visible.contains("optedStart="))
   assertFalse(visible.contains("postDelayed(cutoff"))
+ }
+ @Test fun eachOffscreenCommandGetsFreshFiniteMonotonicWindowNotPersistentOptIn() {
+  val service=File("src/main/java/com/serexe/sarah/HeySarahListenerService.kt").readText()
+  val command=File("src/main/java/com/serexe/sarah/OffscreenCommand.kt").readText()
+  assertTrue(service.contains("OffscreenCommand(this,ListenerWindow(SystemClock.elapsedRealtime(),persistent=false),"))
+  assertFalse(service.contains("OffscreenCommand(this,Long.MAX_VALUE"))
+  assertTrue(command.contains("private val deadline:ListenerWindow"))
+  assertEquals(2,Regex("deadline\\.valid\\(SystemClock\\.elapsedRealtime\\(\\)\\)").findAll(command).count())
+  assertTrue(command.contains("if(!eligible()) stop()"))
+  assertTrue(command.contains("p.eligibility={scope.isActive && eligible()}"))
+  val admitted=86_401_000L // persistent listener may already be days old
+  val window=ListenerWindow(admitted,persistent=false)
+  assertTrue(window.valid(admitted));assertTrue(window.valid(admitted+119_999))
+  assertFalse(window.valid(admitted+120_000));assertFalse(window.valid(admitted-1))
+ }
+ @Test fun commandDeadlineDuringPendingPreparationRejectsLateStartAndWaitsForRealRelease()=runBlocking {
+  // Both scheduled invalidation and the final eligibility recheck must reject late native start.
+  for(watchdog in listOf(true,false)) {
+   val now=java.util.concurrent.atomic.AtomicLong(86_401_000L)
+   val window=ListenerWindow(now.get(),persistent=false)
+   val entered=java.util.concurrent.CountDownLatch(1);val resume=java.util.concurrent.CountDownLatch(1)
+   val closing=java.util.concurrent.CountDownLatch(1);val release=java.util.concurrent.CountDownLatch(1)
+   val starts=java.util.concurrent.atomic.AtomicInteger();val closes=java.util.concurrent.atomic.AtomicInteger()
+   val played=java.util.concurrent.atomic.AtomicBoolean(true)
+   val owner=PlaybackOwnership();val lease=Any()
+   assertTrue(OffscreenOwnership.acquire(lease))
+   val scope=CoroutineScope(SupervisorJob()+Dispatchers.IO)
+   fun barrier(latch:java.util.concurrent.CountDownLatch) {check(latch.await(3,java.util.concurrent.TimeUnit.SECONDS))}
+   val preparing=scope.launch {
+    played.set(owner.play({window.valid(now.get())}) {object:PlaybackOwnership.Resource {
+     override fun initialize() {}
+     override fun prepare() {entered.countDown();barrier(resume)}
+     override fun start() {starts.incrementAndGet()}
+     override fun close():Boolean {closing.countDown();barrier(release);closes.incrementAndGet();return true}
+    }})
+   }
+   var ack=false;var rearms=0;var off=0
+   val completion=ServiceCommandCompletion({ack && !OffscreenOwnership.held()},
+    {window.valid(now.get())},{rearms++;true},{off++})
+   try {
+    barrier(entered);now.addAndGet(ListenerWindow.LIMIT_MS)
+    assertFalse(window.valid(now.get()))
+    val nativeAck=if(watchdog) owner.stop() else {
+     // Let prepare return before watchdog invalidation: eligibility alone must veto start.
+     resume.countDown();barrier(closing);owner.stop()
+    }
+    assertFalse("expiry invalidation is not cleanup ACK",nativeAck.isDone)
+    if(watchdog) preparing.cancel() // coroutine cancellation also cannot acknowledge blocked native work
+    assertFalse(completion.complete());assertEquals(0,rearms);assertEquals(0,off)
+    assertFalse(CommandCleanup.await(null,{true},nativeAck,timeoutMs=25,preparing=preparing))
+    assertFalse(nativeAck.isDone);assertTrue(OffscreenOwnership.held())
+    assertFalse(completion.complete());assertEquals(0,off)
+    val cleanup=async(start=CoroutineStart.UNDISPATCHED) {
+     CommandCleanup.await(null,{true},nativeAck,preparing=preparing)
+    }
+    assertFalse(cleanup.isCompleted)
+    resume.countDown();barrier(closing)
+    assertEquals(0,starts.get());assertEquals(0,closes.get())
+    assertFalse(cleanup.isCompleted);assertFalse(completion.complete());assertEquals(0,off)
+    release.countDown();ack=cleanup.await()
+    assertTrue(ack);assertFalse(played.get());assertEquals(1,closes.get())
+    assertFalse(completion.complete()) // real native ACK alone cannot release command lease
+    OffscreenOwnership.release(lease)
+    assertFalse(completion.complete());assertEquals(0,rearms);assertEquals(1,off)
+   } finally {
+    resume.countDown();release.countDown();preparing.join();scope.cancel();OffscreenOwnership.release(lease)
+   }
+  }
  }
  @Test fun productionWiringKeepsExistingForegroundOwnerAndNeverRepostsOnReturn() {
   val service=File("src/main/java/com/serexe/sarah/HeySarahListenerService.kt").readText()

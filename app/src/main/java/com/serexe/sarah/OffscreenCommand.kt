@@ -12,7 +12,7 @@ import java.util.concurrent.TimeUnit
 /** Owned by the already-running microphone FGS; never starts a service or Activity. */
 internal class OffscreenCommand(
  private val context:Context,
- private val deadline:Long,
+ private val deadline:ListenerWindow,
  private val active:()->Boolean,
  private val stage:(String)->Unit,
  private val finished:()->Unit
@@ -27,7 +27,8 @@ internal class OffscreenCommand(
  private var recording:Deferred<Unit>?=null
  private var preparing:Deferred<Unit>?=null
  private val monitor=Executors.newSingleThreadScheduledExecutor {r->Thread(r,"sarah-command-safety").apply {isDaemon=true}}
- private fun eligible()=active() && SystemClock.elapsedRealtime()<deadline && AudioEligibility.allowed(context,true) && NotificationAvailability.allowed(context)
+ // One monotonic command window covers capture, network, pending native prepare and playback.
+ private fun eligible()=active() && deadline.valid(SystemClock.elapsedRealtime()) && AudioEligibility.allowed(context,true) && NotificationAvailability.allowed(context)
  fun start():Boolean {
   if(running || !eligible()) return false
   if(!OffscreenOwnership.acquire(this)) return false
@@ -35,7 +36,7 @@ internal class OffscreenCommand(
   val state=runCatching {Vault(context,this).load()}.getOrNull()
   if(state==null) {OffscreenOwnership.release(this);return false}
   if(!OffscreenWakePolicy.admit(active(),eligible(),AudioArbiter.idle(),
-    SystemClock.elapsedRealtime()<deadline,state.optString("phase"),
+    deadline.valid(SystemClock.elapsedRealtime()),state.optString("phase"),
     Identity.valid(state.optString("conversation")) && state.optString("origin").isNotEmpty() && state.optString("token").isNotEmpty())) {OffscreenOwnership.release(this);return false}
   running=true;cleanupComplete=false
   // No native resource exists yet. A rejected watchdog schedule must not orphan the lease.
@@ -130,7 +131,8 @@ internal class OffscreenCommand(
       currentCoroutineContext().ensureActive()
       if(!eligible()) return
       stage("speaking")
-      if(!withTimeout((deadline-SystemClock.elapsedRealtime()).coerceAtLeast(1L)) {done.await()}) {stage("interrupted");return}
+      // Preserve a per-command playback cap even when listener opt-in has no expiry.
+      if(!withTimeout(120_000L) {done.await()}) {stage("interrupted");return}
      }
      stage("done");return
     }

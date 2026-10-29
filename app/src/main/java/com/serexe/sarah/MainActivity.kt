@@ -155,7 +155,7 @@ class MainActivity:ComponentActivity() {
     }
    }
 
-   if(listenerConsent) AlertDialog(onDismissRequest={listenerConsent=false},title={Text("Enable local Hey Sarah?")},text={Text("For at most 2 minutes, a foreground microphone service listens locally, including offscreen. No wake buffer is saved/uploaded. On an unlocked wake, the listener microphone releases before command recording with a readiness chime, an adaptive 1.6–3.2-second silence endpoint after speech, and a 30-second discard-only safety cap; a completed command is sent once to the paired bridge; reply may play aloud. Locked wake only notifies: no unlock bypass, recording, or automatic confirmation. Stop anytime. Black-screen phone behavior remains unverified.")},confirmButton={TextButton(onClick={
+   if(listenerConsent) AlertDialog(onDismissRequest={listenerConsent=false},title={Text("Enable persistent local Hey Sarah?")},text={Text("Until you explicitly Stop, a foreground microphone service listens locally even after closing or swiping away the app. Android shows an ongoing microphone notification and privacy indicator; continuous listening and CPU wake lock use battery. No wake buffer is saved/uploaded. On an unlocked wake, the listener microphone releases before command recording with a readiness chime, an adaptive 1.6–3.2-second silence endpoint after speech, and a 30-second discard-only safety cap; a completed command is sent once to the paired bridge; reply may play aloud. Locked wake only notifies: no unlock bypass, recording, or automatic confirmation. OS process death, reboot, or Force stop ends listening until a visible new opt-in. Black-screen phone behavior remains unverified.")},confirmButton={TextButton(onClick={
     listenerConsent=false
     val required=if(Build.VERSION.SDK_INT>=33) arrayOf(Manifest.permission.RECORD_AUDIO,Manifest.permission.POST_NOTIFICATIONS) else arrayOf(Manifest.permission.RECORD_AUDIO)
     when(ListenerPermissionFlow.confirmed(required.all {context.checkSelfPermission(it)==PackageManager.PERMISSION_GRANTED})) {
@@ -163,7 +163,7 @@ class MainActivity:ComponentActivity() {
      ListenerPermissionFlow.Action.REQUEST_PERMISSION -> {listenerPermissionReady=false;listenerPermission.launch(required)}
      else -> Unit
     }
-   }) {Text("Enable for 2 minutes")}},dismissButton={TextButton(onClick={listenerConsent=false}) {Text("Not now")}})
+   }) {Text("Enable until Stop")}},dismissButton={TextButton(onClick={listenerConsent=false}) {Text("Not now")}})
    if(confirmNew) AlertDialog(onDismissRequest={confirmNew=false},title={Text("New server conversation?")},text={Text("Recording will be discarded. Pending server work may continue; this will not undo actions. A separate conversation is created.")},confirmButton={TextButton(onClick={confirmNew=false;vm.newConversation()}) {Text("Create new")}},dismissButton={TextButton(onClick={confirmNew=false}) {Text("Keep current")}})
    if(confirmReset) AlertDialog(onDismissRequest={confirmReset=false},title={Text("Clear local pairing?")},text={Text("Local token, transcript, and request identity will be erased. Server conversations and actions are not deleted. Ask bridge administrator for a new device token.")},confirmButton={TextButton(onClick={confirmReset=false;vm.resetPairing()}) {Text("Clear pairing")}},dismissButton={TextButton(onClick={confirmReset=false}) {Text("Keep")}})
   }
@@ -171,14 +171,14 @@ class MainActivity:ComponentActivity() {
 }
 @Composable private fun ListenerControls(state:String,ui:SarahViewModel.Ui,canStart:Boolean,permissionReady:Boolean,onStart:()->Unit,onStop:()->Unit) {
  Column {
-  Text("Hey Sarah: $state · 2-minute foreground-service window. Unlocked offscreen wake ends after an adaptive 1.6–3.2-second speech pause (30-second safety cap), submits once, and speaks. Locked wake notifies only. No physical black-screen proof yet.",style=MaterialTheme.typography.bodySmall)
+  Text("Hey Sarah: $state · persistent microphone foreground service until Stop. Unlocked offscreen wake ends after an adaptive 1.6–3.2-second speech pause (30-second safety cap), submits once, and speaks. Locked wake notifies only. No physical black-screen proof yet.",style=MaterialTheme.typography.bodySmall)
   val context=LocalContext.current
   Text("Local stages (no content): ${StageTrail.read(context).lines().takeLast(3).joinToString(" · ")}",style=MaterialTheme.typography.bodySmall)
   if(state=="off") {
-   OutlinedButton(onClick=onStart,enabled=canStart) {Text("Enable Hey Sarah for 2 minutes")}
+   OutlinedButton(onClick=onStart,enabled=canStart) {Text("Enable persistent Hey Sarah")}
    if(permissionReady) Text("Microphone permission granted. Tap Enable Hey Sarah again to start listening.",style=MaterialTheme.typography.bodySmall)
   } else OutlinedButton(onClick=onStop) {Text("Stop Hey Sarah microphone")}
-  if(state=="off" && ui.phase in setOf("recording","finalizing","uploading","polling","reply_audio_pending","playing")) TextButton(onClick=onStop) {Text("End hands-free window (current server work continues)")}
+  if(state=="off" && ui.phase in setOf("recording","finalizing","uploading","polling","reply_audio_pending","playing")) TextButton(onClick=onStop) {Text("Stop hands-free listening (current server work continues)")}
  }
 }
 @Composable private fun AssistantSetup(available:Boolean,held:Boolean,opened:Boolean,onRequest:()->Unit) {

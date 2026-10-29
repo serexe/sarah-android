@@ -11,7 +11,7 @@ import android.media.*
 import android.os.*
 import kotlinx.coroutines.flow.MutableStateFlow
 
-/** Explicit foreground consent starts a bounded local-only window.
+/** Explicit foreground consent starts a persistent local-only microphone FGS.
  * Locked/offscreen hits notify; only visible unlocked hits hand off after microphone release.
  */
 class HeySarahListenerService:Service() {
@@ -38,7 +38,7 @@ class HeySarahListenerService:Service() {
    if(worker==null && listenerCleanup.complete && !session.released) complete() else finishService()
   }
  }
- private val cutoff=Runnable {stage("stopped");stop(this)}
+
  private val interruptions=object:BroadcastReceiver() {
   override fun onReceive(context:Context?,intent:Intent?) {
    if(intent?.action==AudioManager.ACTION_AUDIO_BECOMING_NOISY) session.stopListening()
@@ -62,22 +62,21 @@ class HeySarahListenerService:Service() {
   if(intent?.action!=START || !permit || worker!=null) {if(worker==null && command==null) {session.stopListening();complete()};return START_NOT_STICKY}
   permit=false
   session=current ?: run {stopSelf();return START_NOT_STICKY}
-  window=ListenerWindow(optedStart)
+  window=ListenerWindow(optedStart,persistent=true)
   val nm=getSystemService(NotificationManager::class.java)
   nm.createNotificationChannel(NotificationChannel(CHANNEL,"Hey Sarah microphone",NotificationManager.IMPORTANCE_LOW))
   if(!session.gate.listening(true) || !safe()) {session.stopListening();complete();return START_NOT_STICKY}
   val stop=PendingIntent.getService(this,1,Intent(this,HeySarahListenerService::class.java).setAction(STOP),PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
   val open=PendingIntent.getActivity(this,2,Intent(this,MainActivity::class.java),PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
   val n=Notification.Builder(this,CHANNEL).setSmallIcon(android.R.drawable.ic_btn_speak_now)
-   .setContentTitle("Hey Sarah · microphone active").setContentText("Listening · 2-minute opt-in · Stop anytime")
+   .setContentTitle("Hey Sarah · microphone active").setContentText("Persistent listening · Stop anytime")
    .setVisibility(Notification.VISIBILITY_PUBLIC).setContentIntent(open).setOngoing(true).addAction(Notification.Action.Builder(null,"Stop",stop).build()).build()
   foregroundNotification=n
   try {
    if(Build.VERSION.SDK_INT>=30) startForeground(71,n,ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE) else startForeground(71,n)
-   val remaining=ListenerWindow.LIMIT_MS-(SystemClock.elapsedRealtime()-optedStart)
-   check(remaining>0)
-   wakeLock=getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,"sarah:local-keyword").also {it.acquire(remaining)}
-   main.postDelayed(cutoff,remaining)
+   // Explicit opt-in retains CPU for local detection until Stop or fail-closed teardown.
+   // Do not restart a microphone FGS from background if the OS destroys this owner.
+   wakeLock=getSystemService(PowerManager::class.java).newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,"sarah:local-keyword").also {it.acquire()}
    stage("listening")
    listenerCleanup.begin()
    worker=Thread({listen()},"sarah-local-keyword").also {it.start()}
@@ -158,7 +157,7 @@ class HeySarahListenerService:Service() {
      {listenerCleanup.complete && listenerOwner.released && AudioArbiter.idle() && !OffscreenOwnership.held()},
      {ServiceRearmPolicy.allowed(current===listenerOwner && session===listenerOwner && !closed,
       teardown.stopped,teardown.destroyed,optedStart,SystemClock.elapsedRealtime(),safe(),
-      AudioEligibility.allowed(this,true),resolved)}, {visibleCommand=null;rearmAfterCommand()}, {finishService()})
+      AudioEligibility.allowed(this,true),resolved,persistent=true)}, {visibleCommand=null;rearmAfterCommand()}, {finishService()})
     handoff=VisibleCommandHandoff(
      {visibleCommand===handoff && current===listenerOwner && !closed && !teardown.stopped && !teardown.destroyed &&
       window?.valid(SystemClock.elapsedRealtime())==true},
@@ -168,16 +167,24 @@ class HeySarahListenerService:Service() {
     if(!handed) {visibleCommand=null;stage("fallback");notifyWake();finishService()}
    } else if(AudioEligibility.allowed(this,true) && current===session && window?.valid(SystemClock.elapsedRealtime())==true) {
     lateinit var completion:ServiceCommandCompletion
-    val owner=OffscreenCommand(this,optedStart+ListenerWindow.LIMIT_MS,
+    // Fresh finite command budget, independent of the persistent listener opt-in.
+    val owner=OffscreenCommand(this,ListenerWindow(SystemClock.elapsedRealtime(),persistent=false),
      {current===session && !teardown.stopped && !teardown.destroyed && status.value!="off"}, {stage(it)}, {completion.complete()})
     completion=ServiceCommandCompletion(
      {command===owner && listenerCleanup.complete && session.released && owner.cleanupComplete && !OffscreenOwnership.held()},
      {ServiceRearmPolicy.allowed(current===session && !closed,teardown.stopped,teardown.destroyed,
-      optedStart,SystemClock.elapsedRealtime(),safe(),AudioEligibility.allowed(this,true),owner.rearmAllowed)},
+      optedStart,SystemClock.elapsedRealtime(),safe(),AudioEligibility.allowed(this,true),owner.rearmAllowed,persistent=true)},
      {rearmAfterCommand()}, {finishService()})
     command=owner
     if(!owner.start()) {stage("fallback");notifyWake();finishService()}
-   } else {stage("locked");notifyWake();finishService()}
+   } else {
+    stage("locked");notifyWake()
+    // Locked wake never records a command. Continue only local keyword capture
+    // under this same explicitly opted-in FGS after native listener release.
+    val isDeviceLocked=getSystemService(KeyguardManager::class.java)?.isDeviceLocked==true
+    if(!(isDeviceLocked && current===session && !closed && !teardown.stopped && !teardown.destroyed &&
+      window?.valid(SystemClock.elapsedRealtime())==true && safe() && AudioArbiter.idle() && rearmAfterCommand())) finishService()
+   }
   }, {worker=null;stage("released")}).also {released ->
    if(!released) {stage("cleanup-failed");return}
   }
@@ -185,7 +192,7 @@ class HeySarahListenerService:Service() {
  }
  private fun rearmAfterCommand():Boolean {
   // Same still-running microphone FGS; never cold-start from background, renew consent,
-  // or extend cutoff/wake lock. Command completion already acknowledged native cleanup.
+  // or extend opt-in. Command completion already acknowledged native cleanup.
   val thread=try {Thread({listen()},"sarah-local-keyword")} catch (_:Exception) {return false}
   val next=ListenerSession()
   if(!AudioArbiter.acquire(next)) return false
@@ -210,11 +217,11 @@ class HeySarahListenerService:Service() {
   StageTrail.write(this,label)
   status.value=if(label=="listening") "Wake listening" else label
   // Notification contains stage category, never command text, transcript, or token.
-  if(label!="listening" && foregroundNotification!=null && status.value!="off") {
+  if(foregroundNotification!=null && status.value!="off") {
    val stop=PendingIntent.getService(this,1,Intent(this,HeySarahListenerService::class.java).setAction(STOP),PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
    try {getSystemService(NotificationManager::class.java).notify(71,Notification.Builder(this,CHANNEL)
-    .setSmallIcon(android.R.drawable.ic_btn_speak_now).setContentTitle("Hey Sarah · microphone window")
-    .setContentText("Stage: $label · Stop anytime").setVisibility(Notification.VISIBILITY_PUBLIC)
+    .setSmallIcon(android.R.drawable.ic_btn_speak_now).setContentTitle("Hey Sarah · microphone active")
+    .setContentText(if(label=="listening") "Persistent listening · Stop anytime" else "Stage: $label · Stop anytime").setVisibility(Notification.VISIBILITY_PUBLIC)
     .setOngoing(true).addAction(Notification.Action.Builder(null,"Stop",stop).build()).build())} catch (_:Exception) {stop(this)}
   }
  }
@@ -224,7 +231,7 @@ class HeySarahListenerService:Service() {
   if(!teardown.finish()) return
   closed=true
   command?.stop();command=null
-  main.removeCallbacks(cutoff)
+
   runCatching {wakeLock?.let {if(it.isHeld) it.release()}};wakeLock=null
   if(current===session) current=null
   if(instance===this) instance=null
@@ -239,10 +246,13 @@ class HeySarahListenerService:Service() {
    .setVisibility(Notification.VISIBILITY_PUBLIC).setContentIntent(open).setAutoCancel(true)
    .setTimeoutAfter(120000).addAction(Notification.Action.Builder(null,"Open Sarah",open).build()).build())
  }
- override fun onTaskRemoved(rootIntent:Intent?) {stop(this);super.onTaskRemoved(rootIntent)}
+ override fun onTaskRemoved(rootIntent:Intent?) {
+  // Recent-card removal is not explicit Stop. Started microphone FGS owns opt-in.
+  super.onTaskRemoved(rootIntent)
+ }
  override fun onDestroy() {
   // Android may already have removed FGS. This cannot wait for, or veto, OS destruction.
-  teardown.destroyed();main.removeCallbacks(cutoff)
+  teardown.destroyed()
   runCatching {wakeLock?.let {if(it.isHeld) it.release()}};wakeLock=null
   runCatching {unregisterReceiver(interruptions)}
   if(!closed) {status.value="destroyed-cleanup-pending";finishService()}
@@ -269,7 +279,7 @@ class HeySarahListenerService:Service() {
   @Synchronized fun start(context:Context,foregroundReady:Boolean,rearm:Boolean=false) {
    if(!visible || !foregroundReady || !AudioEligibility.allowed(context,true) || status.value!="off") return
    val now=SystemClock.elapsedRealtime()
-   if(rearm && (optedStart==0L || !ListenerWindow(optedStart).valid(now))) return
+   if(rearm && (optedStart==0L || !ListenerWindow(optedStart,persistent=true).valid(now))) return
    if(!rearm) optedStart=now
    context.getSystemService(NotificationManager::class.java).cancel(72)
    val next=ListenerSession()
