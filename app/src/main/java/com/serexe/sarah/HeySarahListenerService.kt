@@ -23,11 +23,12 @@ class HeySarahListenerService:Service() {
  private var window:ListenerWindow?=null
  private var wakeLock:PowerManager.WakeLock?=null
  @Volatile private var command:OffscreenCommand?=null
+ private var visibleCommand:VisibleCommandHandoff?=null
  private var foregroundNotification:Notification?=null
  private var closed=false
  private val teardown=ServiceTeardown(
-  {session.stopListening();command?.stop()},
-  {worker==null && listenerCleanup.complete && session.released && command?.cleanupComplete!=false},
+  {session.stopListening();command?.stop();visibleCommand?.stop()},
+  {worker==null && listenerCleanup.complete && session.released && command?.cleanupComplete!=false && (visibleCommand==null || (visibleCommand?.cleanupComplete==true && AudioArbiter.idle()))},
   {stopForeground(STOP_FOREGROUND_REMOVE);stopSelf()})
  private fun requestStop() {
   teardown.stop() // synchronous invalidation; no framework stopService
@@ -150,12 +151,30 @@ class HeySarahListenerService:Service() {
   }, {safe() && window?.valid(SystemClock.elapsedRealtime())==true}, {
    dispatched=true
    if(visible && getSystemService(PowerManager::class.java).isInteractive) {
+    val listenerOwner=session
+    var resolved=false
+    lateinit var handoff:VisibleCommandHandoff
+    val completion=ServiceCommandCompletion(
+     {listenerCleanup.complete && listenerOwner.released && AudioArbiter.idle() && !OffscreenOwnership.held()},
+     {ServiceRearmPolicy.allowed(current===listenerOwner && session===listenerOwner && !closed,
+      teardown.stopped,teardown.destroyed,optedStart,SystemClock.elapsedRealtime(),safe(),
+      AudioEligibility.allowed(this,true),resolved)}, {visibleCommand=null;rearmAfterCommand()}, {finishService()})
+    handoff=VisibleCommandHandoff(
+     {visibleCommand===handoff && current===listenerOwner && !closed && !teardown.stopped && !teardown.destroyed &&
+      window?.valid(SystemClock.elapsedRealtime())==true},
+     {resolved=it;completion.complete()})
+    visibleCommand=handoff
     val handed=AudioEligibility.allowed(this,true) && runCatching {onWake?.invoke()==true}.getOrDefault(false)
-    if(!handed) {stage("fallback");notifyWake()}
-    finishService()
+    if(!handed) {visibleCommand=null;stage("fallback");notifyWake();finishService()}
    } else if(AudioEligibility.allowed(this,true) && current===session && window?.valid(SystemClock.elapsedRealtime())==true) {
+    lateinit var completion:ServiceCommandCompletion
     val owner=OffscreenCommand(this,optedStart+ListenerWindow.LIMIT_MS,
-     {current===session && !teardown.stopped && !teardown.destroyed && status.value!="off"}, {stage(it)}, {finishService()})
+     {current===session && !teardown.stopped && !teardown.destroyed && status.value!="off"}, {stage(it)}, {completion.complete()})
+    completion=ServiceCommandCompletion(
+     {command===owner && listenerCleanup.complete && session.released && owner.cleanupComplete && !OffscreenOwnership.held()},
+     {ServiceRearmPolicy.allowed(current===session && !closed,teardown.stopped,teardown.destroyed,
+      optedStart,SystemClock.elapsedRealtime(),safe(),AudioEligibility.allowed(this,true),owner.rearmAllowed)},
+     {rearmAfterCommand()}, {finishService()})
     command=owner
     if(!owner.start()) {stage("fallback");notifyWake();finishService()}
    } else {stage("locked");notifyWake();finishService()}
@@ -163,6 +182,27 @@ class HeySarahListenerService:Service() {
    if(!released) {stage("cleanup-failed");return}
   }
   if(!dispatched) finishService()
+ }
+ private fun rearmAfterCommand():Boolean {
+  // Same still-running microphone FGS; never cold-start from background, renew consent,
+  // or extend cutoff/wake lock. Command completion already acknowledged native cleanup.
+  val thread=try {Thread({listen()},"sarah-local-keyword")} catch (_:Exception) {return false}
+  val next=ListenerSession()
+  if(!AudioArbiter.acquire(next)) return false
+  if(!next.gate.start(true)) {AudioArbiter.release(next);return false}
+  command=null;session=next;current=next
+  listenerCleanup.begin()
+  worker=thread
+  return try {stage("listening");thread.start();true} catch (_:Exception) {
+   next.stopListening()
+   // Only a never-started thread proves no recorder/JNI acquisition. Otherwise
+   // keep ownership until the real worker's finally acknowledges native release.
+   if(thread.state==Thread.State.NEW) {
+    worker=null;listenerCleanup.finish(null,null,null,null,null,null)
+    next.releaseAfter({listenerCleanup.complete},{false},{})
+   }
+   false
+  }
  }
  private fun stage(label:String) {
   if(closed || teardown.destroyed || current!==session) return
@@ -211,6 +251,7 @@ class HeySarahListenerService:Service() {
  }
  companion object {
   // Read-only same-process cleanup evidence; null means no live service, not ACK true.
+  internal fun visibleHandoff():VisibleCommandHandoff?=instance?.visibleCommand?.takeIf {it.owned()}
   internal fun cleanupSnapshot():Pair<Boolean?,Boolean?> = instance?.let {
    (it.listenerCleanup.complete && it.session.released) to it.command?.cleanupComplete
   } ?: (null to null)

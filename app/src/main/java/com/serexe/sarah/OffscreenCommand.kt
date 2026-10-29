@@ -21,6 +21,8 @@ internal class OffscreenCommand(
  @Volatile private var capture:Capture?=null
  @Volatile private var playback:Playback?=null
  @Volatile var cleanupComplete=true; private set
+ @Volatile private var stopped=false
+ var rearmAllowed=false; private set
  private var running=false
  private var recording:Deferred<Unit>?=null
  private var preparing:Deferred<Unit>?=null
@@ -49,13 +51,16 @@ internal class OffscreenCommand(
     // Cancellation is not cleanup acknowledgment. Keep service/lease until native release returns.
     val clean=CommandCleanup.await(recording,{capture?.releaseComplete ?: true},
      playback?.stopAcknowledgement() ?: java.util.concurrent.CompletableFuture.completedFuture(true),preparing=preparing)
-    if(clean) {capture=null;recording=null;playback=null;running=false;cleanupComplete=true;OffscreenOwnership.release(this@OffscreenCommand);finished()}
+    if(clean) {
+     rearmAllowed=!stopped && eligible() && OffscreenWakePolicy.resolved(state.optString("phase"))
+     capture=null;recording=null;playback=null;running=false;cleanupComplete=true;OffscreenOwnership.release(this@OffscreenCommand);finished()
+    }
     else stage("cleanup-failed")
    }
   }
   return true
  }
- fun stop() { scope.cancel();capture?.discard();playback?.stop() }
+ fun stop() { stopped=true;scope.cancel();capture?.discard();playback?.stop() }
  private suspend fun run(state:JSONObject) {
   if(!eligible()) return
   val vault=Vault(context,this)

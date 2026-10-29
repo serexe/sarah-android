@@ -37,6 +37,7 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
  private var foreground=false
  private var authenticated=false
  private var wakeCapture=false
+ private var visibleHandoff:VisibleCommandHandoff?=null
  private var leaseEpoch=OffscreenOwnership.epoch()
  private var healthState="idle"
  private var healthGeneration:Long?=null
@@ -60,10 +61,15 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
   is javax.net.ssl.SSLException -> "tls"
   is Bridge.Failure -> when(e.status) {403->"access";429->"rateLimit";503->"notReady";else->"http"}
   is java.net.SocketTimeoutException -> "timeout"
+  is java.net.UnknownHostException -> "dns"
+  is java.net.ConnectException -> "connect"
+  is java.net.NoRouteToHostException -> "noRoute"
+  is java.io.EOFException -> "eof"
+  is java.net.ProtocolException -> "protocol"
   is IOException -> "network"
   else -> "formatOrConnection"
  }
- private fun serviceBusy()=HeySarahListenerService.status.value!="off" || OffscreenOwnership.held() || leaseEpoch!=OffscreenOwnership.epoch()
+ private fun serviceBusy()=(visibleHandoff?.let {!it.owned()} ?: (HeySarahListenerService.status.value!="off")) || OffscreenOwnership.held() || leaseEpoch!=OffscreenOwnership.epoch()
  private val playback=playbackFactory { clean->val g=generation.get();val c=state.optString("conversation");val r=state.optString("request");scope.launch { if (owner(g,c,r) && _ui.value.phase=="playing") {show("done",if(clean) "Reply ready" else "Playback interrupted");if(clean) rearmIfEligible() else {wakeCapture=false;runCatching {abortWindow()}}} } }
  init {
   try {
@@ -80,15 +86,15 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
    }
   } catch (_:OffscreenOwnership.LeaseHeld) { _ui.value=Ui(status="Finishing background command") }
     catch (_:Exception) { state=JSONObject();_ui.value=Ui(status="Secure storage unavailable. Re-pair required; no plaintext recovery.",phase="error") }
-  // Release precedes service-off in the normal command path. Observe both boundaries
-  // in the VM: a lifecycle-paused Compose listener may miss the off transition.
+  // Lease release precedes service-off or same-owner listening. Observe both;
+  // listening permits persisted presentation only, not manual capture or reconnect.
   scope.launch { OffscreenOwnership.releases.collect {
-   if(foreground && HeySarahListenerService.status.value=="off" &&
+   if(foreground && HeySarahListenerService.status.value in setOf("off","Wake listening") &&
     _ui.value.status=="Finishing background command") syncAfterService()
   } }
   scope.launch { HeySarahListenerService.status.collect { status ->
-   if(status=="off" && foreground && !_ui.value.canCapture &&
-    (_ui.value.status=="Finishing background command" || leaseEpoch!=OffscreenOwnership.epoch())) syncAfterService()
+   if(status in setOf("off","Wake listening") && foreground && !_ui.value.canCapture &&
+    (_ui.value.status=="Finishing background command" || leaseEpoch!=OffscreenOwnership.epoch() || status=="off" && !authenticated)) syncAfterService()
   } }
  }
  private fun makeBridge()=bridgeFactory(state.getString("origin"),state.getString("token"),state.optString("ca","").takeIf {it.isNotEmpty()}?.let { android.util.Base64.decode(it,android.util.Base64.DEFAULT) })
@@ -102,6 +108,7 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
   _ui.value=Ui(p,if(p=="uncertain") "Outcome uncertain. Check existing request; never resend." else p.replaceFirstChar {it.uppercase()},state.optString("conversation").takeIf {it.isNotEmpty()},messages(),true,canCapture=authenticated && p in setOf("ready","done","error","cancelled"))
  }
  private fun show(phase:String,status:String,confirmation:JSONObject?=null) {
+  if(phase=="uncertain" && visibleHandoff!=null) {wakeCapture=false;runCatching {abortWindow()}}
   state.put("phase",phase);save()
   _ui.value=Ui(phase,status,state.optString("conversation").takeIf {it.isNotEmpty()},messages(),bridge!=null,confirmation,authenticated && phase in setOf("ready","done","error","cancelled"))
  }
@@ -115,28 +122,54 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
   state.put("messages",kept);save();_ui.value=_ui.value.copy(transcript=messages())
  }
  private fun owner(g:Long,c:String,r:String):Boolean=foreground && !serviceBusy() && generation.get()==g && state.optString("conversation")==c && state.optString("request")==r
- private fun stopOperations() { if(healthState=="inflight") healthState="canceled";generation.incrementAndGet();if(wakeCapture) runCatching {abortWindow()};wakeCapture=false;job?.cancel();job=null;capture?.stop();captureJob?.cancel();captureJob=null;capture?.discard();capture=null;playback.stop() }
+ private fun stopOperations() {
+  val handoff=visibleHandoff;visibleHandoff=null
+  val recording=captureJob;val mic=capture
+  if(healthState=="inflight") healthState="canceled"
+  generation.incrementAndGet();val wake=wakeCapture;wakeCapture=false
+  job?.cancel();job=null;mic?.stop();recording?.cancel();captureJob=null;mic?.discard();capture=null
+  val playbackClosed=(playback as? Playback)?.stopAcknowledgement()
+  if(playbackClosed==null) playback.stop()
+  if(wake) runCatching {abortWindow()}
+  if(handoff!=null) scope.launch {
+   if(CommandCleanup.await(recording,{(mic as? Capture)?.releaseComplete ?: true},
+     playbackClosed ?: java.util.concurrent.CompletableFuture.completedFuture(true))) handoff.complete(false)
+  }
+ }
+ private fun stopVisibleCommand() {
+  val phase=_ui.value.phase
+  stopOperations()
+  when(phase) {
+   "recording","finalizing" -> show("ready","Recording discarded; nothing sent")
+   "uploading","polling","cancelling" -> show("uncertain","Command stopped. Check existing request; never resend.")
+   "playing","reply_audio_pending" -> show("done","Playback stopped. Server work not cancelled.")
+  }
+ }
  private fun rearmIfEligible() {
-  val should=wakeCapture && foreground && authenticated && _ui.value.phase=="done" && commandEligible(true)
-  wakeCapture=false
-  if(should) runCatching {rearmListener()} // production rechecks visible, keyguard, opt-in deadline and audio lease
+  val should=wakeCapture && foreground && authenticated && _ui.value.phase in setOf("done","error","cancelled") && commandEligible(true)
+  val handoff=visibleHandoff;visibleHandoff=null;wakeCapture=false
+  if(handoff!=null) handoff.complete(should) else if(should) runCatching {rearmListener()} // production rechecks visible, keyguard, opt-in deadline and audio lease
  }
  /** Called only by the service on the main thread, after native engine and AudioRecord release. */
- fun acceptWake():Boolean {
+ internal fun acceptWake(handoff:VisibleCommandHandoff?=HeySarahListenerService.visibleHandoff()):Boolean {
   if(!foreground || !authenticated || !_ui.value.canCapture || _ui.value.phase !in setOf("ready","done","error","cancelled") || !commandEligible(true) || !AudioArbiter.idle()) return false
-  startCapture(true)
+  startCapture(true,handoff)
   return _ui.value.phase=="recording" && wakeCapture
  }
- fun onForeground() { foreground=true;if(HeySarahListenerService.status.value!="off") _ui.value=_ui.value.copy(canCapture=false)
-  else if(leaseEpoch!=OffscreenOwnership.epoch()) {_ui.value=_ui.value.copy(canCapture=false);syncAfterService()}
+ fun onForeground() { foreground=true;if(HeySarahListenerService.status.value!="off") {
+   _ui.value=_ui.value.copy(canCapture=false)
+   if(HeySarahListenerService.status.value=="Wake listening" &&
+    (_ui.value.status=="Finishing background command" || leaseEpoch!=OffscreenOwnership.epoch())) syncAfterService()
+  } else if(leaseEpoch!=OffscreenOwnership.epoch()) {_ui.value=_ui.value.copy(canCapture=false);syncAfterService()}
   else if(!authenticated) syncAfterService() }
  fun syncAfterService() {
-  if(!foreground || HeySarahListenerService.status.value!="off" || _ui.value.canCapture) return
+  val listenerOff=HeySarahListenerService.status.value=="off"
+  if(!foreground || !listenerOff && HeySarahListenerService.status.value!="Wake listening" || _ui.value.canCapture) return
   if(OffscreenOwnership.held()) {_ui.value=_ui.value.copy(status="Finishing background command",canCapture=false);return}
   try {state=vault.load();leaseEpoch=OffscreenOwnership.epoch();bridge=if(state.has("origin") && state.has("token")) makeBridge() else null
    if(bridge==null) {authenticated=false;_ui.value=if(state.length()==0) Ui() else Ui(phase="error",status="Secure storage unavailable");return}
    if(state.optString("phase") in setOf("uploading","recording","creating","cancelling","confirming","polling")) {state.put("phase","uncertain");save()}
-   restore();authenticated=false;reconnect()}
+   authenticated=false;restore();if(listenerOff) reconnect()}
   catch (_:OffscreenOwnership.LeaseHeld) {_ui.value=_ui.value.copy(status="Finishing background command",canCapture=false)}
   catch (_:Exception) {_ui.value=_ui.value.copy(phase="error",status="Secure storage unavailable",canCapture=false)}
  }
@@ -179,17 +212,18 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
    val h=withContext(io) {bridge!!.health()}
    if (foreground && !serviceBusy() && generation.get()==g) {
     if(h.optInt("protocol")!=1 || !h.optBoolean("ready")) {healthState="notReady";_ui.value=_ui.value.copy(phase="disconnected",status="Bridge not ready",canCapture=false)}
-    else {healthState="succeeded";authenticated=true;show(if (state.optString("request").isNotEmpty() && state.optString("phase")=="uncertain") "uncertain" else "ready","Connected")}
+    else {healthState="succeeded";authenticated=true;val unresolved=state.optString("request").isNotEmpty() && state.optString("phase")=="uncertain";show(if(unresolved) "uncertain" else "ready",if(unresolved) "Connected. Outcome uncertain. Check existing request; never resend." else "Connected")}
    } else if(healthGeneration==g) healthState="ignored"
   } catch (e:CancellationException) {if(healthGeneration==g) healthState="canceled";throw e}
     catch (e:Exception) {if(healthGeneration==g) {healthState="failed";lastHealthFailure=healthFailure(e)};if(foreground && generation.get()==g) _ui.value=_ui.value.copy(phase="disconnected",status=safeError(e),canCapture=false)} }
  }
- fun startCapture(fromWake:Boolean=false) {
+ fun startCapture(fromWake:Boolean=false) = startCapture(fromWake,null)
+ private fun startCapture(fromWake:Boolean,handoff:VisibleCommandHandoff?) {
   if(!foreground || serviceBusy() && !fromWake || OffscreenOwnership.held() || !authenticated || !_ui.value.canCapture || bridge==null || _ui.value.phase !in listOf("ready","done","error","cancelled") || state.optString("conversation").isEmpty()) return
   if(!commandEligible(fromWake)) return
-  stopOperations();wakeCapture=fromWake;val g=generation.get();val c=captureFactory {scope.launch {routeInterrupted()}};capture=c
+  stopOperations();wakeCapture=fromWake;visibleHandoff=handoff;handoff?.onStop={stopVisibleCommand()};val g=generation.get();val c=captureFactory {scope.launch {routeInterrupted()}};capture=c
   if(c is Capture) {
-   c.eligibility={commandEligible(fromWake)}
+   c.eligibility={commandEligible(fromWake) && (handoff?.owned() ?: true)}
    c.onMicReady={cue->scope.launch {
     if(foreground && generation.get()==g && capture===c && _ui.value.phase=="recording")
      _ui.value=_ui.value.copy(status=if(cue==MicReadyCueGate.Result.OUTPUT_MUTED)
@@ -217,7 +251,7 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
   c.stop()
   job=scope.launch {
    try {recordingJob?.join()} catch (_:CancellationException) {c.discard();return@launch}
-   if(!foreground || serviceBusy() && !wakeCapture || OffscreenOwnership.held() || leaseEpoch!=OffscreenOwnership.epoch() || generation.get()!=g || capture!==c) {c.discard();return@launch}
+   if(!foreground || serviceBusy() && (!wakeCapture || visibleHandoff!=null) || OffscreenOwnership.held() || leaseEpoch!=OffscreenOwnership.epoch() || generation.get()!=g || capture!==c) {c.discard();return@launch}
    captureJob=null;capture=null
    val wav=try { c.finish() } catch (_:Exception) {c.discard();show("error","Recording interrupted or too short; nothing sent");return@launch}
    if(OffscreenOwnership.held() || !commandEligible(wakeCapture)) {c.discard();if(!OffscreenOwnership.held()) show("ready","Recording eligibility lost; nothing sent");return@launch}
@@ -264,7 +298,8 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
     if(envelope==null || envelope.optString("conversation")!=c) show("uncertain","Confirmation unavailable or invalid. No action sent by app")
     else show("confirming","Server requests confirmation; acceptance does not prove action success",envelope)
    }
-   "error","cancelled","uncertain" -> {wakeCapture=false;abortWindow();show(stage,detail.ifBlank {stage})}
+   "error","cancelled" -> {show(stage,detail.ifBlank {stage});rearmIfEligible()}
+   "uncertain" -> {wakeCapture=false;abortWindow();show(stage,detail.ifBlank {stage})}
    "transcribing","thinking","acting","speaking" -> show("polling","Server: $stage${if(detail.isBlank()) "" else " · $detail"}")
    else -> show("uncertain","Unknown server state; no retry")
   }
@@ -285,7 +320,7 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
  fun cancelTurn() {
   val turn=state.optString("turn");val c=state.optString("conversation");val r=state.optString("request")
   if(!foreground || serviceBusy() || !Identity.valid(turn) || _ui.value.phase !in setOf("polling","confirming")) return
-  wakeCapture=false;val g=generation.incrementAndGet();job?.cancel();show("cancelling","Cancelling server turn; this cannot undo dispatched actions")
+  val g=generation.incrementAndGet();job?.cancel();show("cancelling","Cancelling server turn; this cannot undo dispatched actions")
   job=scope.launch {try {
    val row=withContext(io) {bridge!!.cancel(turn)}
    if(owner(g,c,r)) applyRow(row,g,c,r)
@@ -300,7 +335,7 @@ class SarahViewModel internal constructor(app:Application,private val vault:Stat
    if(owner(g,c,r)) poll(g,c,r,turn)
   } catch (_:Exception) {if(owner(g,c,r)) show("uncertain","Confirmation outcome uncertain. Check existing request.")}}
  }
- fun stopAudio() {if(serviceBusy()) return;wakeCapture=false;playback.stop();if(_ui.value.phase=="playing") show("done","Playback stopped. Server work not cancelled.")}
+ fun stopAudio() {if(serviceBusy()) return;if(visibleHandoff!=null) {stopVisibleCommand();return};wakeCapture=false;playback.stop();if(_ui.value.phase=="playing") show("done","Playback stopped. Server work not cancelled.")}
  fun newConversation() {
   if(!foreground || serviceBusy() || bridge==null) return
   stopOperations();val g=generation.get();show("creating","Creating separate server conversation; pending work is not undone")
