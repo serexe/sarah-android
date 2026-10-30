@@ -43,11 +43,6 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import java.io.IOException
 
-private val charcoal=Color(0xff151817)
-private val surfaceDark=Color(0xff202523)
-private val orange=Color(0xffff742e)
-private val cream=Color(0xfff5f3ed)
-private val sage=Color(0xffb6c9b6)
 class MainActivity:ComponentActivity() {
  private val vm by viewModels<SarahViewModel>()
  private var roleAvailable by mutableStateOf(false)
@@ -76,9 +71,8 @@ class MainActivity:ComponentActivity() {
   if(locked()) {finish();return}
   assistantOpened=isAssistantInvocation(intent)
   refreshRole()
-  setContent { val dark=androidx.compose.foundation.isSystemInDarkTheme()
-   val colors=if(dark) darkColorScheme(primary=orange,onPrimary=charcoal,background=charcoal,onBackground=cream,surface=surfaceDark,onSurface=cream)
-    else lightColorScheme(primary=Color(0xffa83c00),onPrimary=Color.White,background=cream,onBackground=charcoal,surface=Color(0xffe9e9e2),onSurface=charcoal)
+  setContent {
+   val colors=darkColorScheme(primary=CommandTeal,onPrimary=Color(0xff112823),background=CommandBackground,onBackground=Color(0xffedf2ef),surface=CommandPanel,onSurface=Color(0xffedf2ef),onSurfaceVariant=CommandMuted,outline=Color(0xff405454))
    MaterialTheme(colorScheme=colors) { SarahScreen(vm,roleAvailable,roleHeld,assistantOpened) {
     if(Build.VERSION.SDK_INT>=29) {
      val manager=roleManager(this)
@@ -101,9 +95,13 @@ class MainActivity:ComponentActivity() {
  override fun onStart() {super.onStart();if(locked()) {finish();return};vm.onForeground();registerReceiver(interruptions,IntentFilter().apply {addAction(Intent.ACTION_SCREEN_OFF);addAction(AudioManager.ACTION_AUDIO_BECOMING_NOISY)});receiverRegistered=true}
  override fun onStop() {HeySarahListenerService.visible=false;if(receiverRegistered) {unregisterReceiver(interruptions);receiverRegistered=false};vm.onBackground();super.onStop()}
 }
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable private fun SarahScreen(vm:SarahViewModel,roleAvailable:Boolean,roleHeld:Boolean,assistantOpened:Boolean,onRequestRole:()->Unit) {
  val ui by vm.ui.collectAsStateWithLifecycle();val context=LocalContext.current
  var showAbout by rememberSaveable { mutableStateOf(false) }
+ var showSettings by rememberSaveable {mutableStateOf(false)}
+ var confirmClear by remember {mutableStateOf(false)}
+ var technical by remember {mutableStateOf(false)}
  BackHandler(enabled=showAbout) {showAbout=false}
  var url by remember { mutableStateOf("") };var token by remember { mutableStateOf("") };var ca by remember { mutableStateOf<ByteArray?>(null) }
  var caStatus by remember { mutableStateOf("System trust only") }
@@ -131,12 +129,10 @@ class MainActivity:ComponentActivity() {
   BoxWithConstraints(Modifier.fillMaxSize()) {
    val wide=maxWidth>=700.dp
    if(showAbout) AboutPage(context,vm) {showAbout=false}
-   else if(wide && ui.hasConfig) Row(Modifier.fillMaxSize().padding(20.dp),horizontalArrangement=Arrangement.spacedBy(24.dp)) {
-    Column(Modifier.weight(1f).fillMaxHeight()) { Header(ui, {confirmNew=true}, {vm.clearLocal()}, {confirmReset=true}, {showAbout=true});Status(ui);AssistantSetup(roleAvailable,roleHeld,assistantOpened,onRequestRole);ListenerControls(listener,ui,ui.canCapture && roleHeld,listenerPermissionReady,startListener,{HeySarahListenerService.stop(context);vm.discard()});Thread(ui,Modifier.weight(1f)) }
-    Column(Modifier.widthIn(max=400.dp).weight(.8f).fillMaxHeight(),verticalArrangement=Arrangement.Bottom) { ActionPanel(ui,vm,{mic.launch(Manifest.permission.RECORD_AUDIO)},permissionDenied,{ context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,Uri.parse("package:${context.packageName}"))) }) }
-   } else Column(Modifier.fillMaxSize().padding(horizontal=16.dp)) {
-    Header(ui,{confirmNew=true},{vm.clearLocal()},{confirmReset=true},{showAbout=true});Status(ui);AssistantSetup(roleAvailable,roleHeld,assistantOpened,onRequestRole);ListenerControls(listener,ui,ui.canCapture && roleHeld,listenerPermissionReady,startListener,{HeySarahListenerService.stop(context);vm.discard()})
-    if(!ui.hasConfig) Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+   else Column(Modifier.fillMaxSize()) {
+    CommandHeader(ui.hasConfig,{confirmNew=true},{showSettings=true})
+    if(!ui.hasConfig) Column(Modifier.weight(1f).padding(horizontal=20.dp).verticalScroll(rememberScrollState())) {
+     Text(ui.status,style=MaterialTheme.typography.bodyMedium,color=CommandMuted)
      Spacer(Modifier.height(16.dp));Text("Your private voice companion",style=MaterialTheme.typography.headlineMedium)
      Text("Enter HTTPS bridge origin and separate revocable Android device token. No provider or smart-home credentials.",color=fg)
      Spacer(Modifier.height(18.dp))
@@ -151,9 +147,40 @@ class MainActivity:ComponentActivity() {
      Button(onClick={vm.configure(url,token,ca)},modifier=Modifier.fillMaxWidth().heightIn(min=60.dp)) {Text("Save & connect")}
      if(ui.status.startsWith("Secure storage unavailable")) TextButton(onClick={confirmReset=true}) {Text("Reset inaccessible local pairing")}
     } else {
-     Thread(ui,Modifier.weight(1f));ActionPanel(ui,vm,{mic.launch(Manifest.permission.RECORD_AUDIO)},permissionDenied,{ context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,Uri.parse("package:${context.packageName}"))) })
+     CommandSession(ui,Modifier.weight(1f),wide)
+     Surface(color=Color(0xff141c1d),modifier=Modifier.fillMaxWidth()) {
+      Column(Modifier.heightIn(max=330.dp).verticalScroll(rememberScrollState()).padding(horizontal=20.dp,vertical=8.dp)) {
+       ListenerControls(listener,ui,ui.canCapture && roleHeld,listenerPermissionReady,startListener,{HeySarahListenerService.stop(context);vm.discard()})
+       ActionPanel(ui,vm,{mic.launch(Manifest.permission.RECORD_AUDIO)},permissionDenied,{ context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,Uri.parse("package:${context.packageName}"))) })
+      }
+     }
     }
    }
+   if(showSettings) ModalBottomSheet(onDismissRequest={showSettings=false},sheetState=rememberModalBottomSheetState(skipPartiallyExpanded=true),containerColor=CommandPanel) {
+    Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal=24.dp).padding(bottom=24.dp),verticalArrangement=Arrangement.spacedBy(12.dp)) {
+     Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically) {
+      Text("Settings",style=MaterialTheme.typography.headlineSmall,modifier=Modifier.weight(1f))
+      TextButton(onClick={showSettings=false}) {Text("Close")}
+     }
+     Text("Pairing & connection",style=MaterialTheme.typography.titleMedium)
+     Text(if(ui.hasConfig) "Local device pairing saved. Connection state: ${commandReadiness(ui.phase,ui.canCapture)}. No credentials displayed." else "No local pairing. Enter the HTTPS bridge and device token on the setup screen.",color=CommandMuted)
+     if(ui.hasConfig) OutlinedButton(onClick=vm::reconnect,modifier=Modifier.heightIn(min=48.dp)) {Text("Check connection")}
+     AssistantSetup(roleAvailable,roleHeld,assistantOpened,onRequestRole)
+     TextButton(onClick={technical=!technical},modifier=Modifier.heightIn(min=48.dp)) {Text(if(technical) "Hide technical details ▴" else "Assistant & diagnostics ▾")}
+     if(technical) {
+      Text("Request: ${ui.phase} · ${ui.status}\nHey Sarah: $listener",style=MaterialTheme.typography.bodySmall)
+      Text("Local stages (no content): ${StageTrail.read(context).lines().takeLast(3).joinToString(" · ")}",style=MaterialTheme.typography.bodySmall)
+      Text("Black-screen phone behavior remains unverified.",style=MaterialTheme.typography.bodySmall)
+     }
+     TextButton(onClick={showSettings=false;showAbout=true},modifier=Modifier.heightIn(min=48.dp)) {Text("About Sarah & capture diagnostics")}
+     HorizontalDivider()
+     if(ui.hasConfig) {
+      TextButton(onClick={confirmClear=true},modifier=Modifier.heightIn(min=48.dp)) {Text("Clear local conversation…")}
+      TextButton(onClick={confirmReset=true},modifier=Modifier.heightIn(min=48.dp)) {Text("Clear pairing…")}
+     }
+    }
+   }
+   if(confirmClear) AlertDialog(onDismissRequest={confirmClear=false},title={Text("Clear local conversation?")},text={Text("Only the local transcript is removed. Server history and actions remain; this does not cancel pending work.")},confirmButton={TextButton(onClick={confirmClear=false;vm.clearLocal()}) {Text("Clear local")}},dismissButton={TextButton(onClick={confirmClear=false}) {Text("Keep")}})
 
    if(listenerConsent) AlertDialog(onDismissRequest={listenerConsent=false},title={Text("Enable persistent local Hey Sarah?")},text={Text("Until you explicitly Stop, a foreground microphone service listens locally even after closing or swiping away the app. Android shows an ongoing microphone notification and privacy indicator; continuous listening and CPU wake lock use battery. No wake buffer is saved/uploaded. On an unlocked wake, the listener microphone releases before command recording with a readiness chime, an adaptive 1.6–3.2-second silence endpoint after speech, and a 30-second discard-only safety cap; a completed command is sent once to the paired bridge; reply may play aloud. Locked wake only notifies: no unlock bypass, recording, or automatic confirmation. OS process death, reboot, or Force stop ends listening until a visible new opt-in. Black-screen phone behavior remains unverified.")},confirmButton={TextButton(onClick={
     listenerConsent=false
@@ -170,15 +197,18 @@ class MainActivity:ComponentActivity() {
  }
 }
 @Composable private fun ListenerControls(state:String,ui:SarahViewModel.Ui,canStart:Boolean,permissionReady:Boolean,onStart:()->Unit,onStop:()->Unit) {
- Column {
-  Text("Hey Sarah: $state · persistent microphone foreground service until Stop. Unlocked offscreen wake ends after an adaptive 1.6–3.2-second speech pause (30-second safety cap), submits once, and speaks. Locked wake notifies only. No physical black-screen proof yet.",style=MaterialTheme.typography.bodySmall)
-  val context=LocalContext.current
-  Text("Local stages (no content): ${StageTrail.read(context).lines().takeLast(3).joinToString(" · ")}",style=MaterialTheme.typography.bodySmall)
-  if(state=="off") {
-   OutlinedButton(onClick=onStart,enabled=canStart) {Text("Enable persistent Hey Sarah")}
-   if(permissionReady) Text("Microphone permission granted. Tap Enable Hey Sarah again to start listening.",style=MaterialTheme.typography.bodySmall)
-  } else OutlinedButton(onClick=onStop) {Text("Stop Hey Sarah microphone")}
-  if(state=="off" && ui.phase in setOf("recording","finalizing","uploading","polling","reply_audio_pending","playing")) TextButton(onClick=onStop) {Text("Stop hands-free listening (current server work continues)")}
+ Column(Modifier.fillMaxWidth()) {
+  Row(Modifier.fillMaxWidth(),verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(8.dp)) {
+   Column(Modifier.weight(1f)) {
+    Text("Hey Sarah",style=MaterialTheme.typography.labelLarge)
+    Text(if(state=="off") "Off · optional" else "Microphone service · $state",style=MaterialTheme.typography.labelSmall,color=CommandMuted)
+   }
+   if(state!="off") TextButton(onClick=onStop,modifier=Modifier.heightIn(min=48.dp)) {Text("Stop wake")}
+   Switch(checked=state!="off",onCheckedChange={if(it) onStart() else onStop()},enabled=state!="off" || canStart,modifier=Modifier.semantics {contentDescription="Persistent Hey Sarah microphone, opt-in"})
+  }
+  if(state=="off" && !canStart) Text("Wake listening needs a ready connection and default-assistant role. See Settings.",style=MaterialTheme.typography.bodySmall,color=CommandMuted)
+  if(permissionReady) Text("Permission granted. Enable Hey Sarah again to start.",style=MaterialTheme.typography.bodySmall)
+  if(state=="off" && ui.phase in setOf("recording","finalizing","uploading","polling","reply_audio_pending","playing")) TextButton(onClick=onStop,modifier=Modifier.heightIn(min=48.dp)) {Text("Stop hands-free listening (server work continues)")}
  }
 }
 @Composable private fun AssistantSetup(available:Boolean,held:Boolean,opened:Boolean,onRequest:()->Unit) {
@@ -218,36 +248,6 @@ internal fun formatInstalledVersion(versionName:String?,versionCode:Long):String
   diagnostic?.let {Text(it,style=MaterialTheme.typography.bodySmall)}
  }
 }
-@Composable private fun Header(ui:SarahViewModel.Ui,onNew:()->Unit,onClear:()->Unit,onReset:()->Unit,onAbout:()->Unit) {
- Column(Modifier.fillMaxWidth().padding(top=12.dp)) {
-  Row(verticalAlignment=Alignment.CenterVertically) {
-   Text("◉",color=MaterialTheme.colorScheme.primary,style=MaterialTheme.typography.headlineLarge,modifier=Modifier.semantics {contentDescription="S.A.R.A.H microphone mark"})
-   Spacer(Modifier.width(9.dp))
-   Column(Modifier.weight(1f)) {Text("S.A.R.A.H",style=MaterialTheme.typography.titleLarge);Text("Voice companion",style=MaterialTheme.typography.labelSmall)}
-   if(ui.hasConfig) TextButton(onClick=onNew,modifier=Modifier.heightIn(min=48.dp)) {Text("＋ New")}
-   TextButton(onClick=onAbout,modifier=Modifier.heightIn(min=48.dp)) {Text("About")}
-  }
-  if(ui.hasConfig) Row(Modifier.fillMaxWidth()) {
-   TextButton(onClick=onClear,modifier=Modifier.weight(1f).heightIn(min=48.dp)) {Text("Clear local",maxLines=2)}
-   TextButton(onClick=onReset,modifier=Modifier.weight(1f).heightIn(min=48.dp)) {Text("Connection settings",maxLines=2)}
-  }
- }
-}
-@Composable private fun Status(ui:SarahViewModel.Ui) {
- val text="${ui.phase.replaceFirstChar {it.uppercase()}} · ${ui.status}"
- Surface(tonalElevation=2.dp,shape=RoundedCornerShape(12.dp),modifier=Modifier.fillMaxWidth().padding(vertical=10.dp)) {
-  Text(text,modifier=Modifier.padding(12.dp).semantics {contentDescription="Status: $text"},style=MaterialTheme.typography.bodyMedium)
- }
-}
-@Composable private fun Thread(ui:SarahViewModel.Ui,modifier:Modifier=Modifier) {
- LazyColumn(modifier.fillMaxWidth(),contentPadding=PaddingValues(vertical=12.dp),verticalArrangement=Arrangement.spacedBy(14.dp)) {
-  if(ui.transcript.isEmpty()) item {Text("Conversation · tap to talk when connected. Server history remains after local clearing.",style=MaterialTheme.typography.bodyMedium)}
-  items(ui.transcript) { (who,text) ->Column {
-   Text(who,color=MaterialTheme.colorScheme.primary,style=MaterialTheme.typography.labelLarge)
-   Surface(shape=RoundedCornerShape(15.dp),tonalElevation=2.dp,modifier=Modifier.fillMaxWidth()) {Text(text,modifier=Modifier.padding(14.dp),style=MaterialTheme.typography.bodyLarge)}
-  } }
- }
-}
 @Composable private fun ActionPanel(ui:SarahViewModel.Ui,vm:SarahViewModel,onMic:()->Unit,denied:Boolean,onSettings:()->Unit) {
  Column(Modifier.fillMaxWidth().imePadding().padding(bottom=12.dp),verticalArrangement=Arrangement.spacedBy(8.dp)) {
   if(ui.phase=="recording") {
@@ -272,7 +272,13 @@ internal fun formatInstalledVersion(versionName:String?,versionCode:Long):String
    OutlinedButton(onClick=vm::cancelTurn,modifier=Modifier.fillMaxWidth().heightIn(min=56.dp)) {Text("Cancel server turn (no rollback)")}
   } else if(ui.hasConfig && ui.canCapture && ui.phase in setOf("ready","done","error","cancelled")) {
    val listening by HeySarahListenerService.status.collectAsStateWithLifecycle()
-   Button(onClick=onMic,enabled=listening=="off",modifier=Modifier.fillMaxWidth().heightIn(min=72.dp)) {Text("● Tap to talk",style=MaterialTheme.typography.titleMedium)}
+   Row(verticalAlignment=Alignment.CenterVertically,horizontalArrangement=Arrangement.spacedBy(14.dp)) {
+    FilledIconButton(onClick=onMic,enabled=listening=="off",shape=RoundedCornerShape(22.dp),modifier=Modifier.size(64.dp).semantics {contentDescription="Tap to talk"}) {CommandMicMark()}
+    Column(Modifier.weight(1f)) {
+     Text("Tap to talk",style=MaterialTheme.typography.titleMedium)
+     Text(if(listening=="off") "No command recording active." else "Wake microphone service: $listening",style=MaterialTheme.typography.bodySmall,color=CommandMuted)
+    }
+   }
    if(listening!="off") Text("Stop Hey Sarah before manual command capture.")
    if(denied) {Text("Microphone denied. Enable permission in Android settings.");TextButton(onClick=onSettings) {Text("Open app settings")}}
   } else {
