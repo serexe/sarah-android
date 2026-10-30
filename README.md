@@ -1,23 +1,53 @@
-# S.A.R.A.H Android — active development
+# Sarah for Android
 
-**Current source and golden:** `sarah-golden-v30` on `main`, package `com.serexe.sarah`, versionCode 30 / versionName `0.1.29-persistent-wake-review`. [Download the latest stable golden APK](https://github.com/serexe/sarah-android/releases/latest) and see [SARAH_BASELINE.md](SARAH_BASELINE.md) for exact approved bytes, source linkage, signer and proof limits. The Kotlin/Compose client connects to a separately operated HTTPS voice bridge; users must configure their own paired bridge and credentials. The golden is an approved **local-review/debug-signed persistent-wake** build, not a production-signed APK or proof of physical-phone connection repair. Josh confirms app close and notification dismissal work; screen-off successive wakes and explicit Stop remain unconfirmed. Golden29 and older review checkpoints remain historical, including [CODE26-CHECKPOINT.md](CODE26-CHECKPOINT.md), [CODE22-REVIEW.md](CODE22-REVIEW.md), and the code8 assets.
+A voice companion for conversations and everyday tasks. Say **“Hey Sarah”** or tap the microphone, ask a question, hear a reply, and keep the conversation going.
 
-## What this source does
+Sarah connects your Android device to a **self-hosted HTTPS voice bridge**. The bridge handles transcription, AI conversation, speech generation, and any tools you choose to enable. You need your own configured backend; this is not a standalone or fully offline AI assistant.
 
-- Foreground tap-to-talk, encrypted local pairing state, authenticated HTTPS bridge health/upload and reply playback; unknown upload admission is not blindly retried.
-- Opt-in **Hey Sarah** offline keyword listener with Android foreground-service notification and explicit Stop; listener, capture, and playback ownership gates guard handoffs. Manual tap remains fallback. Assistant-role gesture opens the app; it does not itself grant recording permission.
-- Code21 corrected an offscreen cleanup owner-reference error (`this@OffscreenCommand`) after native ACK. Later source adds adaptive endpointing and wake-stage handling; no-speech or 30-second cap discards. The code26 softer cue starts after native recording reports ready and drains its acoustic tail before retaining command PCM. Phone feedback is subjective; code26 automated runtime/endpoint proof was not run.
+[Download](https://github.com/serexe/sarah-android/releases/latest) · [Get started](#get-started) · [Documentation](#documentation) · [Report an issue](https://github.com/serexe/sarah-android/issues)
 
-Microphone requires opt-in/permission. Do not put provider or home secrets on the device; use a revocable bridge token. Local reset does not erase server history, and OS cache may retain temporary reply audio after process death. No live bridge endpoint, token, private CA, signer or personal transcript is published.
+## What you can do
 
-## Build source and limits
+- **Talk naturally:** tap to speak, listen to spoken replies, and ask follow-up questions.
+- **Use a wake word:** opt in to on-device “Hey Sarah” detection, with an Android foreground-service notification and an explicit Stop control.
+- **Ask for help with your home, notes, or calendar:** connect supported tools through your backend, with only the access you configure.
+- **Keep service credentials on your server:** pair the app using an HTTPS bridge address and a revocable device token, not your AI-provider or smart-home credentials.
 
-JDK 17, Android SDK 35 and Gradle 8.11.1 wrapper. The **compiled upstream sherpa-onnx AAR is intentionally not in Git**. Retrieve the official v2.0.1 artifact from the URL in [KWS-DEPENDENCIES.md](KWS-DEPENDENCIES.md) as `app/libs/sherpa-onnx-2.0.1.aar` and verify SHA-256 `a8d09d1d32f3eb8520482c6d3d43fae674681c5b050385967c70a3c2c9bf0ee7` before building; Gradle's `verifySherpaAar` task also rejects a mismatch. Model inference assets and required notice texts are included under `app/src/main/assets/`. SDKs, downloaded dependencies and caches are not included.
+For example, ask “Turn on the kitchen lights,” “Add milk to my notes,” or “What is on my calendar today?” These need the corresponding backend integrations and permissions; they are not connected out of the box.
 
-`app/build.gradle.kts` retains its local review signing configuration, which reads `.local-review/review.jks` and `.local-review/signing-pass`. Those files are private and absent. A separately approved local signer is required for the configured signed debug build; neither key nor credentials are bundled. A rebuilt APK is **not** identical to the phone-approved golden unless its SHA-256 matches. Private Android instrumentation/device-fixture tests, audio fixtures and test-server PKCS#12 key are excluded; historical `ScreenshotPolicyTest.kt` remains from code3. Public unit tests under `app/src/test/` are source only. Build30 physical feedback and runtime proof limits, plus historical build29 evidence, are documented in [SARAH_BASELINE.md](SARAH_BASELINE.md); no build or test was rerun for this publication.
+## Screenshots
 
-## Repository history and licensing
+<p align="center">
+  <img src="docs/screenshots/v31-setup.png" width="260" alt="Sarah v31 review APK: unpaired setup with empty HTTPS bridge address and device token fields" />
+  <img src="docs/screenshots/v31-settings.png" width="260" alt="Sarah v31 review APK: Settings showing no local pairing and assistant controls" />
+</p>
 
-The build29 snapshot preserves prior commits, screenshots, code26 and older publication records, existing historical releases/assets, historical code8 [COVERED-SOURCE.md](COVERED-SOURCE.md), [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md), and `notices/` tree. **Historical identity/checksum assertions in those documents refer to code8, not build29.** Existing third-party notices and Eigen covered-source downloads remain linked without claiming an exhaustive SBOM or legal certification. Older [docs/screenshots](docs/screenshots/) images show code3 only.
+Actual **v31 review** APK screens: unpaired setup and Settings, not the current stable release. The paired conversation screen has not been captured. [Screenshot provenance and limits](docs/screenshots/V31-CAPTURE.md).
 
-Owner-controlled source/artwork: [MIT LICENSE](LICENSE); third-party components and model keep separate terms. [KWS-DEPENDENCIES.md](KWS-DEPENDENCIES.md) records sherpa/model provenance; [DEPENDENCIES.md](DEPENDENCIES.md) records declared dependencies; `app/src/main/assets/licenses/` includes sherpa Apache-2.0, ONNX Runtime MIT and its ThirdPartyNotices. No APK or compiled native AAR is committed to Git; the exact approved build30 APK is a release asset, not claimed bit-reproducible from this source snapshot.
+## Get the app
+
+**[Download the latest stable APK](https://github.com/serexe/sarah-android/releases/latest)** for Android 8.0 or newer.
+
+The current stable baseline is **golden30**, a local-review/debug-signed build for self-hosted setups, not a production-signed consumer release. The [v31 Command Center UI](https://github.com/serexe/sarah-android/tree/ui/command-center-review) is still a separate review branch. See the [stable baseline](SARAH_BASELINE.md) for exact APK identity and verification limits.
+
+## Get started
+
+1. **Run your bridge.** Follow the companion project's [bridge setup](https://github.com/serexe/sarah-r1/blob/main/docs/SETUP.md#bridge) and [configuration guide](https://github.com/serexe/sarah-r1/blob/main/docs/CONFIGURATION.md). Use its shared bridge, not its Ubuntu Touch client. See [backend details](docs/DEVELOPMENT.md#bridge-backend) for the Hermes ACP option.
+2. **Install and pair Sarah.** Install the Android APK, enter your HTTPS bridge address and device token in setup, and import your CA certificate only if your bridge requires it. Keep provider and integration credentials on the server.
+3. **Start talking.** Grant microphone permission and tap to speak. Enable “Hey Sarah” only if you want wake-word listening; use Stop to turn it off.
+
+Wake-word detection runs on the device; transcription, AI replies, and speech generation depend on your backend. Screen-off successive wakes and physical-phone Stop behavior still need validation, so tap-to-talk remains the fallback. Local reset does not delete server-side history; review your bridge's permissions and data retention before connecting real accounts.
+
+## Documentation
+
+- [Development, build requirements, signing, and technical limits](docs/DEVELOPMENT.md)
+- [Stable APK provenance and validation status](SARAH_BASELINE.md)
+- [Bridge permissions and configuration](https://github.com/serexe/sarah-r1/blob/main/docs/CONFIGURATION.md) · [Bridge security](https://github.com/serexe/sarah-r1/blob/main/SECURITY.md)
+- [Screenshot provenance](docs/screenshots/V31-CAPTURE.md)
+- [Dependencies](DEPENDENCIES.md) · [Wake-word model and runtime](KWS-DEPENDENCIES.md)
+
+For bugs and feature requests, [open an issue](https://github.com/serexe/sarah-android/issues). Do not include tokens, private certificates, recordings, or personal transcripts.
+
+## License
+
+Original project source and artwork are [MIT licensed](LICENSE). Third-party libraries and models retain their own terms; see [third-party notices](THIRD-PARTY-NOTICES.md) and [covered-source information](COVERED-SOURCE.md).
