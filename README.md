@@ -1,3 +1,9 @@
+> **Moved: Sarah development now lives in [serexe/sarah-r1](https://github.com/serexe/sarah-r1).**
+>
+> This repository is a read-only historical archive. Use the maintained repository for [source and documentation](https://github.com/serexe/sarah-r1), [new issues](https://github.com/serexe/sarah-r1/issues), and [future releases](https://github.com/serexe/sarah-r1/releases).
+>
+> Existing [Android releases and APK assets](https://github.com/serexe/sarah-android/releases), Git history, branches, tags, screenshots, and provenance records remain here at their original links. They have not been copied or reissued. The historical README below describes those retained builds; consolidation does not validate a new build or establish APK/source equivalence.
+
 # Sarah for Android
 
 A voice companion for conversations and everyday tasks. Say **“Hey Sarah”** or tap the microphone, ask a question, hear a reply, and keep the conversation going.
